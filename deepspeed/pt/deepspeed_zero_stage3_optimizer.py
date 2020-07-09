@@ -87,6 +87,7 @@ def move_to_cpu(tensor_list):
     for tensor in tensor_list:
         tensor.data = tensor.data.cpu()
 
+#TODO Needs to be implemented
 class PrefetchCoordinator(object):
     
     def __init__(self):
@@ -94,46 +95,83 @@ class PrefetchCoordinator(object):
         self.forward_param_trace=[]
         self.backward_param_trace=[]
 
-        self.current_position = None
         self.trace_completed = False
 
     def record_forward_trace(self, sub_module):
-
+        pass
     def record_backward_trace(self, sub_module):
+        pass
 
-    def get_params_to_prefetch(self, module, is_forward=None, numel = 50000000):
+    def print_trace(self):
+        pass
+
+    def get_params_to_prefetch(self, sub_module, is_forward=None, numel = 50000000):
         assert is_forward is not None, "is_forward must be set to True for Forward Propagation and False for backward Propagation"
+        return []
     
 
 class PartitionedParameterCoordinator(object):
     def __init__(self, comm_stream = None):
+        
         self.in_flight_handles = []
         self.comm_stream = comm_stream if comm_stream is not None else torch.cuda.current_stream()
+        self.prefetch_coordinator = PrefetchCoordinator()
 
+    '''-----------------------Tracing and Prefetching ---------------'''
+    def record_forward_trace(self, sub_module):
+        self.prefetch_coordinator.record_forward_trace(sub_module)
+
+    def record_backward_trace(self, sub_module):
+        self.prefetch_coordinator.record_backward_trace(sub_module)
+
+    def finish_tracing(print_trace=False):
+        self.prefetch_coordinator.trace_completed = True
+        
+        if print_trace:
+            self.prefetch_coordinator.print_trace()
+    
+    # Pre fetches the parameters for sub_modules that comes after 
+    #  the current sub_module. This call is asynchronous
+    def prefetch_next_sub_modules(self, sub_module, is_forward=True, numel=50000000):
+        #prefetch if there is no current prefetching in flight
+        if not self.in_flight_hahdles:
+            params_to_prefetch = self.prefetch_coordinator.get_params_to_prefetch(sub_module, is_forward=is_forward, numel=numel)
+            self._all_gather(params_to_prefetch, async_op = True)
+    
+    '''----------------------------------------------------------------------'''
+
+    #Fetches the parameters in the sub_module
+    #This call is blocking
     def fetch_sub_module(self, sub_module):
         partitioned_params = []
+        params_in_flight = False
         
         for _, param in module.named_parameters(recurse=False):
             if param.status == PARTITIONED:
                 partitioned_params.append()
+            if param.status == INFLIGHT:
+                params_in_flight = True
         
-        self.gather(partitioned_params, async_op = True)
-        self.synchronize_communication()
+        #parameters are partitioned and need to be allgathered
+        self._all_gather(partitioned_params, async_op = True)
+        
+        #parameters are inflight and communication needs to be completed
+        if partitioned_params or params_in_flight:
+            self._synchronize_communication()
 
     def release_sub_module(self, sub_module):
         for _, param in module.named_parameters(recurse=False):
             param.partition()
 
-    def all_gather(partitioned_params, async_op = False):
+    def _all_gather(partitioned_params, async_op = False):
         with torch.cuda.stream(self.comm_stream):
-            handle = partitioned_params[0].all_gather(param_list = partitioned_params, async_op = True) if partitioned_params else None
-        self.in_flight_handles.append(handle) if handle else None
+            handles = partitioned_params[0].all_gather(param_list = partitioned_params, async_op = True) if partitioned_params else None
+        
+        if handles is not None:
+            self.in_flight_handles.extend(handles)
 
-    def fetch_sub_module(self, sub_module):
-        params_to_prefetch = self.get_params_to_prefetch(sub_module)
-        self.all_gather(params_to_prefetch, async_op = True)
-
-    def synchronize_communication(synchronize_streams=True):
+    
+    def _synchronize_communication(synchronize_streams=True):
         for handle in self.in_flight_handles:
             handle.wait()
 
@@ -211,14 +249,11 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
         self.optimizer = init_optimizer
 
         self.module = module
-
-        self.prefetch_coordinator = PrefetchCoordinator()
         
-        self.partitioned_parameter_coordinator = PartitionedParameterCoordinator()
+        self.param_coordinator = PartitionedParameterCoordinator()
 
-        self.check_parameter_compatibility()
+        #self.check_parameter_compatibility()
 
-        
         self.setup_zero_stage3_hooks()
         
         self.timers = timers
@@ -474,6 +509,7 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
             return PreBackwardFunction.apply(module,_run_before_backward_function, outputs)
 
         def _post_backward_module_hook(module, *args):
+            
             self.post_sub_module_forward_function(module)
 
         module.register_forward_pre_hook(_pre_forward_module_hook)
@@ -484,28 +520,26 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
 
     def pre_sub_module_forward_function(self, sub_module):
         
-        if not self.param_manager.trace_completed:
-            self.param_manager.record_forward_trace(sub_module)
+        self.param_coordinator.record_forward_trace(sub_module)
         
-        self.param_manager.fetch_sub_module(sub_module)
+        self.param_coordinator.fetch_sub_module(sub_module)
         
-        self.param_manager.prefetch_next_sub_module(sub_module)
+        self.param_coordinator.prefetch_next_sub_modules(sub_module, is_forward=True, numel=self.prefetch_elements)
         
 
     def post_sub_module_forward_function(self, sub_module):
-        self.param_manager.release_sub_module(sub_module)
+        self.param_coordinator.release_sub_module(sub_module)
     
     def pre_sub_module_backward_function(self, sub_module):
-        if not self.param_manager.trace_completed:
-            self.param_manager.record_backward_trace(sub_module)
+        self.param_coordinator.record_backward_trace(sub_module)
 
-        self.param_manager.fetch_sub_module(sub_module)
+        self.param_coordinator.fetch_sub_module(sub_module)
         
-        self.param_manager.prefetch_next_sub_module(sub_module)
+        self.param_coordinator.prefetch_next_sub_modules(sub_module, is_forward=False, numel=self.prefetch_elements)
 
 
     def post_sub_module_backward_function(self, sub_module):
-            self.param_manager.release_sub_module(sub_module)
+            self.param_coordinator.release_sub_module(sub_module)
 
 
     def _release_ipg_buffers(self):
@@ -880,8 +914,9 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
         #####################################################################
 
     def reduce_ready_partitions_and_remove_grads(self, param, i):
-        if self.zero3_tracing_phase:
-            param.grad = None
+        #TODO just for testing
+        param.grad = None
+        return
 
         self.reduce_independent_p_g_buckets_and_remove_grads(param, i)
 
@@ -1228,6 +1263,13 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
         """
         see_memory_usage(f"In step before checking overflow")
 
+        print_rank_0("Finished Tracing at Beginning of Step")
+        self.param_coordinator.finish_tracing(print_trace=True)
+
+        print_rank_0("Finished Tracing at Beginning of Step")
+
+        exit(0)
+        
         # First compute norm for all group so we know if there is overflow
         self.check_overflow()
 
