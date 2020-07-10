@@ -193,13 +193,24 @@ class PreBackwardFunction(torch.autograd.Function):
         ctx.pre_backward_function(ctx.module)
         return (None, None) + args
 
+class PostBackwardFunction(torch.autograd.Function):
 
-def _run_before_backward(module, inputs, outputs):
-    
-    def _run_before_backward_function(module):
-        print(f"Pre backward hook for module {module.id}")
+    @staticmethod
+    def forward(ctx, module, pre_backward_function, extra_input,  *outputs):
+        ctx.module = module
+        ctx.pre_backward_function = pre_backward_function
+        ctx.extra_input = extra_input
+        return outputs
 
-    return PreBackwardFunction.apply(module,_run_before_backward_function, outputs)
+    @staticmethod
+    def backward(ctx, *args):    
+        ctx.pre_backward_function(ctx.module)
+        extra_input = ctx.extra_input
+        if extra_input is not None:
+            return (None, None) + (torch.ones(1, dtype=extra_input.dtype, device=extra_input.device),) +  args 
+        else:
+            return (None, None, None) + args
+
         
 class FP16_DeepSpeedZeroStage3Optimizer(object):
     """
@@ -508,15 +519,36 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
             # identity autograd.function that executes _run_before_backward_function in backward
             return PreBackwardFunction.apply(module,_run_before_backward_function, outputs)
 
-        def _post_backward_module_hook(module, *args):
+        def _post_backward_module_hook(module, inputs):
             
-            self.post_sub_module_forward_function(module)
+            def _run_after_backward_function(sub_module):
+                self.post_sub_module_backward_function(sub_module)
 
+            requires_grad = any([isinstance(v, torch.Tensor) and v.requires_grad for v in inputs])
+            
+            extra_input = None
+            
+            #creating a tensor requiring grad so that the packward pass for the PostBackwardFunction is called
+            if not requires_grad:
+                print(f"Extra tensor with requires grad inserted {module.id}")
+                sample_tensor = list(filter(lambda x: isinstance(x, torch.Tensor), inputs))[0]
+                extra_input = torch.ones(1, dtype = sample_tensor.dtype, device=sample_tensor.device)  
+                extra_input.requires_grad = True
+
+            return PostBackwardFunction.apply(module,_run_after_backward_function, extra_input, *inputs)
+
+
+        #Pre forward hook
         module.register_forward_pre_hook(_pre_forward_module_hook)
+        #Post forward hook
         module.register_forward_hook(_post_forward_module_hook)
-        module.register_backward_hook(_post_backward_module_hook)
+        
+        #Pre backward hook
         module.register_forward_hook(_pre_backward_module_hook)    
 
+        # post backward hook
+        module.register_forward_pre_hook(_post_backward_module_hook)
+        
 
     def pre_sub_module_forward_function(self, sub_module):
         
