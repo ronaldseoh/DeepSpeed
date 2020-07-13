@@ -1,4 +1,27 @@
 import torch
+from enum import enum
+
+class ZeroParamType(enum):
+    
+    #same as regular pytorch parameters
+    NORMAL = 1
+    
+    #parameters are partitioned across data parallel process
+    PARTITIONED = 2
+    
+    #the parameter is held with a unique process rank 
+    #and is not available on all other process
+    REMOTE = 3
+
+class ZeroParamStatus(enum):
+    #parameters are fully present and ready for use on all processes
+    AVAILABLE = 1
+    
+    #parameters are either partitioned or remote in some or all process
+    NOT_AVAILABLE = 2
+
+    #parameters are being gathered.
+    INFLIGHT = 3
 
 #Inserts _post_init_method at the end of init method
 #for all sub classes of torch.nn.Module
@@ -64,15 +87,16 @@ class ScatterdParameters(InsertPostInitMethodToModuleSubClasses):
         print(f'SCATTERING PARAMS in {module.__class__.__name__}' )
         for name, param in module.named_parameters(recurse=False):
             self._convert_to_deepspeed_param(param, name)
-            param.scatter()
+            param.partition()
 
 
     def _convert_to_deepspeed_param(self, param):
-        # Scattered, Normal, Partitioned
-        param.ds_param_type = ParamType.SCATTERED
+        
+        # Partitioned, Normal, Remote 
+        param.ds_param_type = ZeroParamType.PARTITIONED
         
         # Replicated vs Partitioned vs Inflight
-        param.ds_status = ParamStatus.REPLICATED
+        param.ds_status = ZeroParamStatus.NOT_AVAILABLE
 
         #Stores the shape of the original tensor
         param.ds_shape = list(param.shape.numpy())
@@ -100,21 +124,24 @@ class ScatterdParameters(InsertPostInitMethodToModuleSubClasses):
     def _allgather(self, param_list, async_op=False):
         handles = []
         for param in param_list:
-            if param.ds_status == ParamStatus.PARTITIONED:
+            if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
                 handle = self._param_allgather(param, async_op = async_op)
+                param.ds_status = ZeroParamStatus.INFLIGHT if async_op else ZeroParamStatus.AVAILABLE
                 handles.append(handle)
+                    
         
         return handles if async_op else return None
 
     def _partition(self, param_list):
         for param in param_list:
             self._partition_param(param)
-            
+            param.ds_status = ZeroParamStatus.NOT_AVAILABLE
+           
 
     def _partition_param(self, param):
-        assert param.ds_status is not ParamStatus.INFLIGHT, f" {param} Cannot parititon a param in flight"
+        assert param.ds_status is not ZeroParamStatus.INFLIGHT, f" {param} Cannot parititon a param in flight"
         
-        if param.ds_status is ParamStatus.REPLICATED:
+        if param.ds_status is ZeroParamStatus.AVAILABLE:
             if param.ds_tensor is not None:
                 partitioned_tensor = param.ds_tensor   
             else:
