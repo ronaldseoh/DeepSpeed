@@ -14,6 +14,7 @@ from tensorboardX import SummaryWriter
 from deepspeed.pt.deepspeed_timer import ThroughputTimer, SynchronizedWallClockTimer
 from deepspeed.pt.deepspeed_zero_optimizer import FP16_DeepSpeedZeroOptimizer
 from deepspeed.pt.zero_optimizer_stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
+from deepspeed.pt.deepspeed_zero_optimizer_stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
 from deepspeed.pt.log_utils import logger
 import deepspeed.pt.deepspeed_checkpointing as deepspeed_activation_checkpointing
 
@@ -27,7 +28,7 @@ from deepspeed.pt.deepspeed_dataloader import DeepSpeedDataLoader
 from deepspeed.pt.deepspeed_constants import \
     ROUTE_TRAIN, ROUTE_PREDICT, ROUTE_EVAL, \
     TORCH_DISTRIBUTED_DEFAULT_PORT, \
-    ZERO_OPTIMIZATION_OPTIMIZER_STATES, ZERO_OPTIMIZATION_GRADIENTS
+    ZERO_OPTIMIZATION_OPTIMIZER_STATES, ZERO_OPTIMIZATION_GRADIENTS, ZERO_OPTIMIZATION_WEIGHTS
 
 import deepspeed.pt.deepspeed_lr_schedules as lr_schedules
 from deepspeed.pt.deepspeed_csr_tensor import CSRTensor
@@ -463,8 +464,14 @@ class DeepSpeedLight(Module):
             self.dp_world_size = self.mpu.get_data_parallel_world_size()
             src_rank = _get_global_rank(self.mpu.get_data_parallel_group(), 0)
             logger.info(f"global src_rank={src_rank}")
+        
+        def is_replicated(p):
+            if hasattr(p,'ds_status') and p.ds_status is not ParamStatus.REPLICATED:
+                return False
+            return True
+
         for p in self.module.parameters():
-            if torch.is_tensor(p):
+            if torch.is_tensor(p) and is_replicated(p): 
                 dist.broadcast(p, src_rank, group=self.data_parallel_group)
 
         # TODO: support new AMP optimizer
@@ -590,6 +597,28 @@ class DeepSpeedLight(Module):
                 mpu=self.mpu,
                 postscale_gradients=self.postscale_gradients(),
                 gradient_predivide_factor=self.gradient_predivide_factor())
+        elif zero_stage == ZERO_OPTIMIZATION_WEIGHTS:
+            print("Initializing ZeRO Stage 3") if dist.get_rank() == 0 else None
+            assert self.gradient_accumulation_steps() == 1, "ZeRO stage 3 does not support gradient accumulation, if you need gradient accumulation please use stage 1"
+            optimizer = FP16_DeepSpeedZeroOptimizer_Stage3(
+                self.module,
+                optimizer,
+                timers=self.timers,
+                static_loss_scale=self.loss_scale(),
+                dynamic_loss_scale=self.dynamic_loss_scale(),
+                dynamic_loss_args=self.dynamic_loss_scale_args(),
+                clip_grad=self.gradient_clipping(),
+                contiguous_gradients=self.zero_contiguous_gradients(),
+                reduce_bucket_size=self.zero_reduce_bucket_size(),
+                allgather_bucket_size=self.zero_allgather_bucket_size(),
+                dp_process_group=self.data_parallel_group,
+                reduce_scatter=self.zero_reduce_scatter(),
+                overlap_comm=self.zero_overlap_comm(),
+                mpu=self.mpu,
+                postscale_gradients=self.postscale_gradients(),
+                gradient_predivide_factor=self.gradient_predivide_factor())
+
+
         else:
             raise NotImplementedError("ZeRO stage {} not implemented".format(zero_stage))
 
