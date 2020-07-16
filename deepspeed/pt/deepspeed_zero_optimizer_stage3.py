@@ -34,6 +34,9 @@ except ImportError:
     from torch._utils import _flatten_dense_tensors as flatten
     from torch._utils import _unflatten_dense_tensors as unflatten
 
+def print_rank_0(message):
+    if torch.distributed.get_rank() == 0:
+        print(message)
 
 def input(msg):
     return
@@ -117,6 +120,7 @@ class PartitionedParameterCoordinator(object):
         self.in_flight_handles = []
         self.comm_stream = comm_stream if comm_stream is not None else torch.cuda.current_stream()
         self.prefetch_coordinator = PrefetchCoordinator()
+        self.hierarchy = 0
 
     '''-----------------------Tracing and Prefetching ---------------'''
     def record_forward_trace(self, sub_module):
@@ -148,37 +152,56 @@ class PartitionedParameterCoordinator(object):
     def fetch_sub_module(self, sub_module):
         partitioned_params = []
         params_in_flight = False
-        
-        for _, param in module.named_parameters(recurse=False):
-            if param.status == ZeroParamStatus.NOT_AVAILABLE:
-                partitioned_params.append()
-            if param.status == ZeroParamStatus.INFLIGHT:
+        print_rank_0(f"{'--' * self.hierarchy}Fetching params in module {sub_module.__class__.__name__}")
+        for _, param in sub_module.named_parameters(recurse=False):
+            param.ds_active_sub_modules += 1
+            print_rank_0(f"{'--' * self.hierarchy}--Fetching parameters {param.ds_id} with active sub modules {param.ds_active_sub_modules}")
+            
+            if param.ds_status == ZeroParamStatus.AVAILABLE:
+                print_rank_0(f"{'--' * self.hierarchy}--Parameter {param.ds_id} is already available")
+            if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
+                partitioned_params.append(param)
+            if param.ds_status == ZeroParamStatus.INFLIGHT:
                 params_in_flight = True
-        
+                print_rank_0(f"{'--' * self.hierarchy}--Parameters {param.ds_id} is already in flight")
+        self.hierarchy += 1
+            
+
         #parameters are partitioned and need to be allgathered
-        self._all_gather(partitioned_params, async_op = True)
+        self._all_gather(partitioned_params, async_op=True)
         
         #parameters are inflight and communication needs to be completed
         if partitioned_params or params_in_flight:
             self._synchronize_communication()
 
-        for _, param in module.named_parameters(recurse=False):
-            param.status = ZeroParamStatus.AVAILABLE
+        for _, param in sub_module.named_parameters(recurse=False):
+            param.ds_status = ZeroParamStatus.AVAILABLE
 
     def release_sub_module(self, sub_module):
-        for _, param in module.named_parameters(recurse=False):
-            param.partition()
-            param.ds_status = ZeroParamStatus.NOT_AVAILABLE
+        self.hierarchy -= 1
+        print_rank_0(f"{'--' * self.hierarchy}Releasing params in module {sub_module.__class__.__name__}")
+        
+        for _, param in sub_module.named_parameters(recurse=False):
+            param.ds_active_sub_modules -= 1
+            if not param.ds_active_sub_modules:
+                print_rank_0(f"{'--' * self.hierarchy}--Releasing parameters {param.ds_id} with active sub modules {param.ds_active_sub_modules}")
+                
+                param.partition(hierarchy=self.hierarchy)
+                param.ds_status = ZeroParamStatus.NOT_AVAILABLE
+            else:
+                print_rank_0(f"{'--' * self.hierarchy}--Did not release parameters {param.ds_id} with active sub modules {param.ds_active_sub_modules}")
+        
+    #print_rank_0("")
 
-    def _all_gather(partitioned_params, async_op = False):
+    def _all_gather(self, partitioned_params, async_op = False):
         with torch.cuda.stream(self.comm_stream):
-            handles = partitioned_params[0].all_gather(param_list = partitioned_params, async_op = True) if partitioned_params else None
+            handles = partitioned_params[0].all_gather(param_list = partitioned_params, async_op = async_op, hierarchy=self.hierarchy) if partitioned_params else None
         
         if handles is not None:
             self.in_flight_handles.extend(handles)
 
     
-    def _synchronize_communication(synchronize_streams=True):
+    def _synchronize_communication(self, synchronize_streams=True):
         for handle in self.in_flight_handles:
             handle.wait()
 
@@ -213,13 +236,15 @@ class PostBackwardFunction(torch.autograd.Function):
     def backward(ctx, *args):    
         ctx.pre_backward_function(ctx.module)
         extra_input = ctx.extra_input
+        #print_rank_0(f"Post backward function for module {ctx.module.__class__.__name__} and id {ctx.module.id}")
         if extra_input is not None:
-            return (None, None) + (torch.ones(1, dtype=extra_input.dtype, device=extra_input.device),) +  args 
+            return (None, None, None) +  args
+            #return (None, None) + (torch.ones(1, device=extra_input.device),) +  args 
         else:
             return (None, None, None) + args
 
         
-class FP16_DeepSpeedZeroStage3Optimizer(object):
+class FP16_DeepSpeedZeroOptimizer_Stage3(object):
     """
     DeepSpeedZeroOptimizer designed to reduce the memory footprint
     required for training large deep learning models.
@@ -340,7 +365,7 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
 
         self.all_reduce_print = False
 
-
+        self.prefetch_elements=50000000
         
         # loop to deal with groups
         for i, param_group in enumerate(self.optimizer.param_groups):
@@ -410,7 +435,9 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
         # #map between param_id and bool to specify if a param is in this partition
         # self.is_param_in_current_partition = {}
 
-        # self.contiguous_gradients = contiguous_gradients
+        #self.contiguous_gradients = contiguous_gradients
+        self.contiguous_gradients = False
+
         # self.grads_in_ipg_bucket = []
         # self.params_in_ipg_bucket = []
         # self.elements_in_ipg_bucket = 0
@@ -472,7 +499,7 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
         # self.reset_partition_gradient_structures()
 
         #creates backward hooks for gradient partitioning
-        self.create_reduce_and_remove_grad_hooks()
+        #self.create_reduce_and_remove_grad_hooks()
 
         # we may have a way of fusing dynamic scale. Do not support for now
         if dynamic_loss_scale:
@@ -499,6 +526,7 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
         #     see_memory_usage(f"After initializing ZeRO optimizer")
 
     def setup_zero_stage3_hooks(self):
+        self.hierarchy = 0
         self._register_hooks_recursively(self.module)
 
         
@@ -524,7 +552,7 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
                 self.pre_sub_module_backward_function(sub_module)
 
             # identity autograd.function that executes _run_before_backward_function in backward
-            return PreBackwardFunction.apply(module,_run_before_backward_function, outputs)
+            return PreBackwardFunction.apply(module,_run_before_backward_function, output)
 
         def _post_backward_module_hook(module, inputs):
             
@@ -536,11 +564,11 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
             extra_input = None
             
             #creating a tensor requiring grad so that the packward pass for the PostBackwardFunction is called
-            if not requires_grad:
-                print(f"Extra tensor with requires grad inserted {module.id}")
-                sample_tensor = list(filter(lambda x: isinstance(x, torch.Tensor), inputs))[0]
-                extra_input = torch.ones(1, dtype = sample_tensor.dtype, device=sample_tensor.device)  
-                extra_input.requires_grad = True
+            # if not requires_grad:
+            #     print(f"Extra tensor with requires grad inserted in module {module.__class__.__name__} with id {module.id} ")
+            #     sample_tensor = list(filter(lambda x: isinstance(x, torch.Tensor), inputs))[0]
+            #     extra_input = torch.ones(1, dtype=torch.float, device=sample_tensor.device)  
+            #     extra_input.requires_grad = True
 
             return PostBackwardFunction.apply(module,_run_after_backward_function, extra_input, *inputs)
 
@@ -642,6 +670,7 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
                         partition_id)
 
     def independent_gradient_partition_epilogue(self):
+        return
         self.report_ipg_memory_usage(f"In ipg_epilogue before reduce_ipg_grads", 0)
         self.reduce_ipg_grads()
         self.report_ipg_memory_usage(f"In ipg_epilogue after reduce_ipg_grads", 0)
@@ -1537,7 +1566,15 @@ class FP16_DeepSpeedZeroStage3Optimizer(object):
             self.ipg_index = 0
 
         self.loss_scaler.backward(loss.float(), retain_graph=retain_graph)
-
+        
+        '''Partitioning Parameters that were not partitioned 
+        Usually if parameters of modules whose input parameters do not require
+        grad computation do not trigger post call and will therefore will remain unpartitioned'''
+        for name, param in self.module.named_parameters(recurse=True):
+            if param.ds_status == ZeroParamStatus.AVAILABLE:
+                print_rank_0(f"Partitioning unpartitioned {param.ds_id} active sub-modules {param.ds_active_sub_modules}")
+                param.partition()
+        
     def check_overflow(self, partition_gradients=True):
         self._check_overflow(partition_gradients)
 

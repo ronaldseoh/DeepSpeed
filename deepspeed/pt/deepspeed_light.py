@@ -15,6 +15,7 @@ from deepspeed.pt.deepspeed_timer import ThroughputTimer, SynchronizedWallClockT
 from deepspeed.pt.deepspeed_zero_optimizer import FP16_DeepSpeedZeroOptimizer
 from deepspeed.pt.zero_optimizer_stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
 from deepspeed.pt.deepspeed_zero_optimizer_stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
+from deepspeed.pt.deepspeed_partition_parameters import ZeroParamStatus, ZeroParamType
 from deepspeed.pt.log_utils import logger
 import deepspeed.pt.deepspeed_checkpointing as deepspeed_activation_checkpointing
 
@@ -466,7 +467,7 @@ class DeepSpeedLight(Module):
             logger.info(f"global src_rank={src_rank}")
         
         def is_replicated(p):
-            if hasattr(p,'ds_status') and p.ds_status is not ParamStatus.REPLICATED:
+            if hasattr(p,'ds_status') and p.ds_status is not ZeroParamStatus.AVAILABLE:
                 return False
             return True
 
