@@ -92,13 +92,12 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
 
     def _post_init_method(self, module):
-        print(f'SCATTERING PARAMS in {module.__class__.__name__}' )
+        print(f'Converting Params in {module.__class__.__name__}' )
         for name, param in module.named_parameters(recurse=False):
             if not hasattr(param,'ds_id'):
                 self._convert_to_deepspeed_param(param)
                 print_rank_0(f"Partitioning param with ds id {param.ds_id} and shape {param.data.shape}")
-                #torch.cuda.synchronize()
-                #param.partition()
+                param.partition()
 
 
     def _convert_to_deepspeed_param(self, param):
@@ -138,6 +137,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                 param_list = [cls]
             self._partition(param_list) 
 
+
         param.all_gather = all_gather
         param.partition = partition
 
@@ -159,6 +159,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             #print_rank_0(f"Partitioning Param {param.ds_id}")
             self._partition_param(param)
             param.ds_status = ZeroParamStatus.NOT_AVAILABLE
+            if param.ds_tensor is not None:
+                assert id(param.data) == id(param.ds_tensor.data), \
+                "After the parameters are initially partitioned, make sure we are not recreating the partition."
            
 
     def _partition_param(self, param):
@@ -166,33 +169,35 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #print_rank_0(f"Param id {param.ds_id} status is {param.ds_status}")
         if param.ds_status is ZeroParamStatus.AVAILABLE:
             if param.ds_tensor is not None:
-                partitioned_tensor = param.ds_tensor   
+                param.data = param.ds_tensor.data
+                return
+            
+            tensor_size = param.numel()
+            if tensor_size % self.world_size != 0:
+                tensor_size += (self.world_size - (param.numel() % self.world_size))
+            partition_size = tensor_size // self.world_size
+            
+            start = partition_size * self.rank
+            end = start + partition_size
+
+            one_dim_param = param.contiguous().view(-1)
+            
+            if start < param.numel() and end <= param.numel():
+                partitioned_tensor = one_dim_param.narrow(0,start, partition_size).clone().detach()
             else:
-                tensor_size = param.numel()
-                if tensor_size % self.world_size != 0:
-                    tensor_size += (self.world_size - (param.numel() % self.world_size))
-                partition_size = tensor_size // self.world_size
+                partitioned_tensor = torch.zeros(partition_size, dtype = param.dtype, device = param.device)
                 
-                start = partition_size * self.rank
-                end = start + partition_size
+                if start < param.numel():
+                    elements_to_copy = param.numel() - start
+                    partitioned_tensor.narrow(0, 0, elements_to_copy).copy_(one_dim_param.narrow(0, start, elements_to_copy))
 
-                one_dim_param = param.contiguous().view(-1)
-                
-                if start < param.numel() and end <= param.numel():
-                    partitioned_tensor = one_dim_param.narrow(0,start, partition_size).clone().detach()
-                else:
-                    partitioned_tensor = torch.zeros(partition_size, dtype = param.dtype, device = param.device)
-                    
-                    if start < param.numel():
-                        elements_to_copy = param.numel() - start
-                        partitioned_tensor.narrow(0, 0, elements_to_copy).copy_(one_dim_param.narrow(0, start, elements_to_copy))
+            param.ds_tensor = partitioned_tensor
+            param.data = param.ds_tensor.data
 
-            param.data = partitioned_tensor.data
+            
             #print(f"ID {param.ds_id} partitioned and contains {param.data.shape}")
 
     def _allgather_param(self, param, async_op=False, hierarchy=0):
-        #Storing partitioned copy
-        param.ds_tensor = param.data
         
         partition_size = param.data.numel()
         tensor_size = partition_size * self.world_size
