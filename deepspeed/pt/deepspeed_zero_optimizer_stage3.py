@@ -371,132 +371,132 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             # push this group to list before modify
             self.fp16_groups.append(param_group['params'])
 
-        #     #not sure why apex was cloning the weights before flattening
-        #     #removing cloning here
+            #not sure why apex was cloning the weights before flattening
+            #removing cloning here
 
-        #     see_memory_usage(f"Before moving param group {i} to CPU")
-        #     #move all the parameters to cpu to free up GPU space for creating flat buffer
-        #     move_to_cpu(self.fp16_groups[i])
-        #     see_memory_usage(f"After moving param group {i} to CPU")
+            see_memory_usage(f"Before moving param group {i} to CPU")
+            #move all the parameters to cpu to free up GPU space for creating flat buffer
+            move_to_cpu(self.fp16_groups[i])
+            see_memory_usage(f"After moving param group {i} to CPU")
 
-        #     #create flat buffer in CPU and move to GPU
-        #     self.fp16_groups_flat.append(
-        #         flatten_dense_tensors_aligned(
-        #             self.fp16_groups[i],
-        #             dist.get_world_size(group=self.dp_process_group),
-        #             self.dp_process_group).cuda(torch.cuda.current_device()))
-        #     see_memory_usage(f"After flattening and moving param group {i} to GPU")
+            #create flat buffer in CPU and move to GPU
+            self.fp16_groups_flat.append(
+                flatten_dense_tensors_aligned(
+                    self.fp16_groups[i],
+                    dist.get_world_size(group=self.dp_process_group),
+                    self.dp_process_group).cuda(torch.cuda.current_device()))
+            see_memory_usage(f"After flattening and moving param group {i} to GPU")
 
-        #     if dist.get_rank(group=self.dp_process_group) == 0:
-        #         see_memory_usage(
-        #             f"After Flattening and after emptying param group {i} cache")
+            if dist.get_rank(group=self.dp_process_group) == 0:
+                see_memory_usage(
+                    f"After Flattening and after emptying param group {i} cache")
 
-        #     # set model fp16 weight to slices of flattened buffer
-        #     updated_params = _unflatten_dense_tensors(self.fp16_groups_flat[i],
-        #                                               self.fp16_groups[i])
-        #     for p, q in zip(self.fp16_groups[i], updated_params):
-        #         p.data = q.data
+            # set model fp16 weight to slices of flattened buffer
+            updated_params = _unflatten_dense_tensors(self.fp16_groups_flat[i],
+                                                      self.fp16_groups[i])
+            for p, q in zip(self.fp16_groups[i], updated_params):
+                p.data = q.data
 
-        #     #divide the flat weights into near equal paritition equal to the data parallel degree
-        #     #each process will compute on a different part of the partition
-        #     #data_parallel_partitions = self.get_data_parallel_partitions(
-        #     #    self.fp16_groups_flat[i])
-        #     #self.parallel_partitioned_fp16_groups.append(data_parallel_partitions)
+            #divide the flat weights into near equal paritition equal to the data parallel degree
+            #each process will compute on a different part of the partition
+            #data_parallel_partitions = self.get_data_parallel_partitions(
+            #    self.fp16_groups_flat[i])
+            #self.parallel_partitioned_fp16_groups.append(data_parallel_partitions)
 
-        #     # a partition of the fp32 master weights that will be updated by this process
-        #     self.fp32_groups_flat.append(
-        #         self.fp16_groups_flat[i].clone().float().detach())
+            # a partition of the fp32 master weights that will be updated by this process
+            self.fp32_groups_flat.append(
+                self.fp16_groups_flat[i].clone().float().detach())
 
-        #     # modify optimizer of have flat master weight
-        #     self.fp32_groups_flat[i].requires_grad = True  # keep this in case internal optimizer uses it
-        #     param_group['params'] = [self.fp32_groups[i]]
+            # modify optimizer of have flat master weight
+            self.fp32_groups_flat[i].requires_grad = True  # keep this in case internal optimizer uses it
+            param_group['params'] = [self.fp32_groups[i]]
 
-        #     #partition_size = len(self.fp16_groups_flat[i]) / dist.get_world_size(
-        #     #    group=self.dp_process_group)
-        #     #params_in_partition, params_not_in_partition, first_offset = self.get_partition_info(self.fp16_groups[i], partition_size, partition_id)
+            #partition_size = len(self.fp16_groups_flat[i]) / dist.get_world_size(
+            #    group=self.dp_process_group)
+            #params_in_partition, params_not_in_partition, first_offset = self.get_partition_info(self.fp16_groups[i], partition_size, partition_id)
 
-        #     #self.partition_size.append(partition_size)
-        #     #self.params_in_partition.append(params_in_partition)
-        #     #self.params_not_in_partition.append(params_not_in_partition)
-        #     #self.first_offset.append(first_offset)
+            #self.partition_size.append(partition_size)
+            #self.params_in_partition.append(params_in_partition)
+            #self.params_not_in_partition.append(params_not_in_partition)
+            #self.first_offset.append(first_offset)
 
-        # self.reduce_bucket_size = int(reduce_bucket_size)
-        # self.allgather_bucket_size = int(allgather_bucket_size)
+        self.reduce_bucket_size = int(reduce_bucket_size)
+        self.allgather_bucket_size = int(allgather_bucket_size)
 
-        # self.reduction_event = torch.cuda.Event(enable_timing=False, blocking=False)
-        # self.reduction_stream = torch.cuda.Stream()
-        # self.callback_queued = False
+        self.reduction_event = torch.cuda.Event(enable_timing=False, blocking=False)
+        
+        self.reduction_stream = torch.cuda.Stream() if self.overlap_comm else torch.cuda.current_stream()
+        self.callback_queued = False
 
-        # self.param_dict = {}
+        self.param_dict = {}
 
-        # #map between param_id and bool to specify if a param is in this partition
-        # self.is_param_in_current_partition = {}
+        #map between param_id and bool to specify if a param is in this partition
+        self.is_param_in_current_partition = {}
 
-        # self.contiguous_gradients = contiguous_gradients
-        self.contiguous_gradients = False
+        self.contiguous_gradients = contiguous_gradients
+        
+        self.grads_in_ipg_bucket = []
+        self.params_in_ipg_bucket = []
+        self.elements_in_ipg_bucket = 0
+        self.params_already_reduced = []
+        self._release_ipg_buffers()
+        self.previous_reduced_grads = None
 
-        # self.grads_in_ipg_bucket = []
-        # self.params_in_ipg_bucket = []
-        # self.elements_in_ipg_bucket = 0
-        # self.params_already_reduced = []
-        # self._release_ipg_buffers()
-        # self.previous_reduced_grads = None
+        #simplified param id
+        self.param_id = {}
 
-        # #simplified param id
-        # self.param_id = {}
+        count = 0
+        for i, params_group in enumerate(self.fp16_groups):
+            for param in params_group:
+                unique_id = id(param)
+                self.param_id[unique_id] = count
+                self.param_dict[count] = param
+                self.params_already_reduced.append(False)
+                count = count + 1
 
-        # count = 0
-        # for i, params_group in enumerate(self.fp16_groups):
-        #     for param in params_group:
-        #         unique_id = id(param)
-        #         self.param_id[unique_id] = count
-        #         self.param_dict[count] = param
-        #         self.params_already_reduced.append(False)
-        #         count = count + 1
+        # for param_group in self.params_in_partition:
+        #     for param in param_group:
+        #         self.is_param_in_current_partition[self.get_param_id(param)] = True
 
-        # # for param_group in self.params_in_partition:
-        # #     for param in param_group:
-        # #         self.is_param_in_current_partition[self.get_param_id(param)] = True
-
-        # # for param_group in self.params_not_in_partition:
-        # #     for param in param_group:
-        # #         self.is_param_in_current_partition[self.get_param_id(param)] = False
+        # for param_group in self.params_not_in_partition:
+        #     for param in param_group:
+        #         self.is_param_in_current_partition[self.get_param_id(param)] = False
 
         # #mapping from parameter to partition that it belongs to
-        # #self.param_to_partition_ids = {}
+        # self.param_to_partition_ids = {}
 
-        # #stores if a partition has been reduced in this step
-        # self.is_partition_reduced = {}
+        #stores if a partition has been reduced in this step
+        self.is_partition_reduced = {}
 
-        # #number of grads in partition that still need to be computed
-        # self.remaining_grads_in_partition = {}
+        #number of grads in partition that still need to be computed
+        #self.remaining_grads_in_partition = {}
 
-        # #total number of grads in partition
-        # self.total_grads_in_partition = {}
+        #total number of grads in partition
+        #self.total_grads_in_partition = {}
 
-        # #stores if a grad in a partition has been computed or not
-        # self.is_grad_computed = {}
+        #stores if a grad in a partition has been computed or not
+        self.is_grad_computed = {}
 
-        # #stores the offset at which a parameter gradient needs to be inserted in a partition
-        # self.grad_partition_insertion_offset = {}
+        #stores the offset at which a parameter gradient needs to be inserted in a partition
+        #self.grad_partition_insertion_offset = {}
 
-        # #the offset in the gradient at which it must be inserted at the beginning of the paritition
-        # self.grad_start_offset = {}
+        #the offset in the gradient at which it must be inserted at the beginning of the paritition
+        #self.grad_start_offset = {}
 
-        # #will store the averaged gradients required by this parititon
-        # self.averaged_gradients = {}
+        #will store the averaged gradients required by this parititon
+        self.averaged_gradients = {}
 
-        # # store index of first parameter in each partition
-        # self.first_param_index_in_partition = {}
+        # store index of first parameter in each partition
+        #self.first_param_index_in_partition = {}
 
-        # #initializes all data structures for implementing gradient partitioning
-        # self.initialize_gradient_partitioning_data_structures()
+        #initializes all data structures for implementing gradient partitioning
+        #self.initialize_gradient_partitioning_data_structures()
 
-        # #resets the data structure value for the next backward propagation
-        # self.reset_partition_gradient_structures()
+        #resets the data structure value for the next backward propagation
+        #self.reset_partition_gradient_structures()
 
-        # creates backward hooks for gradient partitioning
-        # self.create_reduce_and_remove_grad_hooks()
+        #creates backward hooks for gradient partitioning
+        self.create_reduce_and_remove_grad_hooks()
 
         # we may have a way of fusing dynamic scale. Do not support for now
         if dynamic_loss_scale:
@@ -512,15 +512,15 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             self.loss_scaler = LossScaler(scale=static_loss_scale)
             self.cur_iter = 0
 
-        # see_memory_usage("Before initializing optimizer states")
-        # self.initialize_optimizer_states()
-        # see_memory_usage("After initializing optimizer states")
+        see_memory_usage("Before initializing optimizer states")
+        self.initialize_optimizer_states()
+        see_memory_usage("After initializing optimizer states")
 
-        # if dist.get_rank() == 0:
-        #     logger.info(f"optimizer state initialized")
+        if dist.get_rank() == 0:
+            logger.info(f"optimizer state initialized")
 
-        # if dist.get_rank(group=self.dp_process_group) == 0:
-        #     see_memory_usage(f"After initializing ZeRO optimizer")
+        if dist.get_rank(group=self.dp_process_group) == 0:
+            see_memory_usage(f"After initializing ZeRO optimizer")
 
     def reset_ds_tensor(self):
         for name, param in self.module.named_parameters(recurse=True):
@@ -622,14 +622,14 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         for i, group in enumerate(self.fp16_groups):
             single_grad_partition = torch.zeros(
-                int(self.partition_size[i]),
-                dtype=self.single_partition_of_fp32_groups[i].dtype,
+                int(self.fp32_groups_flat[i].numel()),
+                dtype=self.fp32_groups_flat[i].dtype,
                 device=torch.cuda.current_device())
-            self.single_partition_of_fp32_groups[i].grad = single_grad_partition
+            self.fp32_groups_flat[i].grad = single_grad_partition
 
         self.optimizer.step()
 
-        for group in self.single_partition_of_fp32_groups:
+        for group in self.fp32_groups_flat:
             group.grad = None
 
         return
@@ -673,19 +673,21 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
                         partition_id)
 
     def independent_gradient_partition_epilogue(self):
-        return
         self.report_ipg_memory_usage(f"In ipg_epilogue before reduce_ipg_grads", 0)
         self.reduce_ipg_grads()
         self.report_ipg_memory_usage(f"In ipg_epilogue after reduce_ipg_grads", 0)
+
+        if self.overlap_comm:
+            self.reduction_stream.synchronize()
+
+        self.partition_previous_reduced_grads()
 
         #if dist.get_rank() == 0:
         #    logger.info("Params already reduced %s", self.params_already_reduced)
         for i in range(len(self.params_already_reduced)):
             self.params_already_reduced[i] = False
 
-        if self.overlap_comm:
-            torch.cuda.synchronize()
-
+        
         for i, _ in enumerate(self.fp16_groups):
             self.averaged_gradients[i] = self.get_flat_partition(
                 self.params_in_partition[i],
@@ -863,71 +865,32 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         return tensor
 
-    def average_tensor(self, tensor):
-        if self.overlap_comm:
-            torch.cuda.synchronize()
-            stream = self.reduction_stream
-        else:
-            stream = torch.cuda.current_stream()
-
-        with torch.cuda.stream(stream):
+    def average_tensor(self, tensor, params_in_tensor):
+        with torch.cuda.stream(self.reduction_stream):
             if not self.reduce_scatter:
                 self.gradient_reduction_w_predivide(tensor)
                 return
 
-            for i, param, param_id in self.params_in_ipg_bucket:
-                partition_ids = self.param_to_partition_ids[i][param_id]
-                partition_size = self.partition_size[i]
-                # Get all partition ids + their offsets
-                partition_ids_w_offsets = []
-                for partition_id in partition_ids:
-                    offset = self.grad_start_offset[i][partition_id][param_id]
-                    partition_ids_w_offsets.append((partition_id, offset))
-                partition_ids_w_offsets.sort(key=lambda t: t[1])
-
-                # Calculate rank and offsets for grad slices
-                for idx in range(len(partition_ids_w_offsets)):
-                    partition_id, offset = partition_ids_w_offsets[idx]
-
-                    # Calculate numel for grad slice depending on partition location
-                    if idx == len(partition_ids_w_offsets) - 1:
-                        # Last partition_id uses its own offset
-                        numel = param.numel() - offset
-                    else:
-                        # Set numel to next partition's offset
-                        numel = partition_ids_w_offsets[idx + 1][1] - offset
-
-                    # Merge bucket ranges if they belong to the same rank
-                    if partition_id == prev_id:
-                        prev_pid, prev_size, prev_numel = rank_and_offsets[-1]
-                        rank_and_offsets[-1] = (prev_pid, prev_size, prev_numel + numel)
-                    else:
-                        rank_and_offsets.append((partition_id, curr_size, numel))
-
-                    curr_size += numel
-                    prev_id = partition_id
             tensor.div_(dist.get_world_size(group=self.dp_process_group))
 
-            async_handles = []
-            for dst, bucket_offset, numel in rank_and_offsets:
-                grad_slice = tensor.narrow(0, int(bucket_offset), int(numel))
-                dst_rank = _get_global_rank(self.dp_process_group, dst)
-                async_handle = dist.reduce(grad_slice,
-                                           dst=dst_rank,
-                                           group=self.dp_process_group,
-                                           async_op=True)
-                async_handles.append(async_handle)
+            #reduction resulting with each rank only holding the gradient partition it owns
+            #This could either be a reduce scatter or a reduce op depending on how 
+            #parameters are partitionied. The method is impelemnted by the 
+            #DeepSpeed param extensions to the pytroch parameter, so its up to
+            #the extension to define what happens here
+            params_in_tensor[0].reduce_gradients_at_owner(param_list=params_to_reduce, async_op=False)
 
-            for handle in async_handles:
-                handle.wait()
 
-    def copy_grads_in_partition(self, param):
+    def partition_previous_reduced_grads(self):
+        if not self.previous_reduced_params:
+            return
+ 
         if self.grads_in_partition is None:
             self.grads_in_partition_offset = 0
             total_size = 0
-            for group in self.params_in_partition:
+            for group in self.fp16_groups:
                 for param_in_partition in group:
-                    total_size += param_in_partition.numel()
+                    total_size += param_in_partition.ds_tensor.numel()
 
             see_memory_usage(f"before copying {total_size} gradients into partition")
             self.grads_in_partition = torch.empty(int(total_size),
@@ -935,51 +898,45 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
                                                   device=torch.cuda.current_device())
             see_memory_usage(f"after copying {total_size} gradients into partition")
 
-        #The allreduce buffer will be rewritted. Copy the gradients in partition to a new buffer
-        new_grad_tensor = self.grads_in_partition.narrow(0,
-                                                         self.grads_in_partition_offset,
-                                                         param.numel())
-        new_grad_tensor.copy_(param.grad.view(-1))
-        param.grad.data = new_grad_tensor.data.view_as(param.grad)
-        self.grads_in_partition_offset += param.numel()
+        
+        for param in self.previous_reduced_params:
+            #The allreduce buffer will be rewritted. Copy the gradients in partition to a new buffer
+            new_grad_tensor = self.grads_in_partition.narrow(0,
+                                                        self.grads_in_partition_offset,
+                                                        param.ds_tensor.numel())
+       
+            param.partition_gradients(partition_buffers=new_grad_tensor)
+
+            self.grads_in_partition_offset += param.ds_tensor.numel()
+            
+        self.previous_reduced_params=[]           
 
     def reduce_ipg_grads(self):
         if self.overlap_comm:
-            stream = self.reduction_stream
-        else:
-            stream = torch.cuda.current_stream()
-
+            self.reduction_stream.synchronize()
+        self.partition_previous_reduced_grads()
+                      
+        params_to_reduce = [param for i, param, param_id in self.params_in_ipg_bucket]
+            
         if self.contiguous_gradients:
-            self.average_tensor(self.ipg_buffer[self.ipg_index])
+            self.average_tensor(self.ipg_buffer[self.ipg_index], params_to_reduce)
         else:
             self.buffered_reduce_fallback(
                 None,
                 self.grads_in_ipg_bucket,
                 elements_per_buffer=self.elements_in_ipg_bucket)
 
-        with torch.cuda.stream(stream):
-            for _, param, param_id in self.params_in_ipg_bucket:
-                self.params_already_reduced[param_id] = True
-
-                if not self.is_param_in_current_partition[param_id]:
-                    if self.overlap_comm and self.contiguous_gradients is False:
-                        # Clear the previous grads during the next reduction
-                        # to avoid clearing them before the reduction is complete.
-                        if self.previous_reduced_grads is None:
-                            self.previous_reduced_grads = []
-                        self.previous_reduced_grads.append(param)
-                    else:
-                        param.grad = None
-                elif self.contiguous_gradients:
-                    self.copy_grads_in_partition(param)
-
+        for _, param, param_id in self.params_in_ipg_bucket:
+            self.params_already_reduced[param_id] = True
+        
+        self.previous_reduced_params = params_to_reduce
+                                        
         self.grads_in_ipg_bucket = []
         self.params_in_ipg_bucket = []
         self.elements_in_ipg_bucket = 0
         #####################################################################
 
     def reduce_ready_partitions_and_remove_grads(self, param, i):
-        return
         self.reduce_independent_p_g_buckets_and_remove_grads(param, i)
 
     def zero_reduced_gradients(self, partition_id, i):
@@ -1079,19 +1036,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
     #if rank is specified do a reduction instead of an allreduce
     def allreduce_and_copy(self, small_bucket, rank=None, log=None):
-        if self.overlap_comm:
-            torch.cuda.synchronize()
-            if self.previous_reduced_grads is not None:
-                # previous_reduced_grads has the previous reduced grads,
-                # now it is safe to clear.
-                for param in self.previous_reduced_grads:
-                    param.grad = None
-                self.previous_reduced_grads = None
-            stream = self.reduction_stream
-        else:
-            stream = torch.cuda.current_stream()
-
-        with torch.cuda.stream(stream):
+        with torch.cuda.stream(self.reduction_stream):
             allreduced = self.allreduce_bucket(small_bucket, rank=rank, log=log)
             if rank is None or rank == dist.get_rank(group=self.dp_process_group):
                 for buf, synced in zip(small_bucket, unflatten(allreduced, small_bucket)):
