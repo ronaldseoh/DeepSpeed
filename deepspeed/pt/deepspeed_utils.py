@@ -249,7 +249,6 @@ def is_model_parallel_parameter(p):
 
 
 def see_memory_usage(message):
-    return
     if torch.distributed.is_initialized() and not torch.distributed.get_rank() == 0:
         return
 
