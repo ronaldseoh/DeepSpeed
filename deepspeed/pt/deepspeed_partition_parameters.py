@@ -1,8 +1,8 @@
 import torch
 from enum import Enum
 
-def print_rank_0(message):
-    if torch.distributed.get_rank() == 0:
+def print_rank_0(message, debug=False, force=False):
+    if torch.distributed.get_rank() == 0 and (debug or force):
         print(message)
 
 class ZeroParamType(Enum):
@@ -50,6 +50,19 @@ class InsertPostInitMethodToModuleSubClasses(object):
         def _init_subclass(cls, **kwargs):
             cls.__init__ = partition_after(cls.__init__)
 
+        def register_external_parameter(cls, name, param):
+            if not hasattr(cls,'_external_params'):
+                cls._external_params = {}
+            
+            assert isinstance(param,torch.nn.Parameter), "param is not a torch.nn.parameter"
+            cls._external_params[name] = param
+
+        def external_parameters(cls):
+            if not hasattr(cls,'_external_params'):
+                cls._external_params = {}            
+            return cls._external_params.items()
+
+
         # Replace .__init__() for all existing subclasses of torch.nn.Module
         for subclass in torch.nn.modules.module.Module.__subclasses__():
             _enable_class(subclass)
@@ -59,6 +72,9 @@ class InsertPostInitMethodToModuleSubClasses(object):
 
         # Replace .__init__() for future subclasses of torch.nn.Module
         torch.nn.modules.module.Module.__init_subclass__ = classmethod(_init_subclass)
+
+        torch.nn.modules.module.Module.ds_register_external_parameter = classmethod(register_external_parameter)
+        torch.nn.modules.module.Module.ds_external_parameters = classmethod(external_parameters)
 
 
     def __exit__(self,exc_type, exc_value, traceback):
@@ -73,6 +89,9 @@ class InsertPostInitMethodToModuleSubClasses(object):
 
         # Replace .__init__() for future subclasses of torch.nn.Module
         torch.nn.modules.module.Module.__init_subclass__ = torch.nn.modules.module.Module._old_init_subclass
+
+        #delattr(torch.nn.modules.module.Module, 'ds_register_external_parameter')
+        #delattr(torch.nn.modules.module.Module, 'ds_external_parameters')
 
     #To be implemented by inheriting classes
     def _post_init_method(self, module):
@@ -92,7 +111,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
 
     def _post_init_method(self, module):
-        print(f'Converting Params in {module.__class__.__name__}' )
+        print_rank_0(f'Converting Params in {module.__class__.__name__}', force=True )
         for name, param in module.named_parameters(recurse=False):
             if not hasattr(param,'ds_id'):
                 self._convert_to_deepspeed_param(param)
@@ -124,7 +143,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         param.ds_id = ScatteredParameters.param_id
         ScatteredParameters.param_id += 1
 
-        def all_gather(param_list=None, async_op = False, hierarchy=None):
+        def all_gather(param_list=None, async_op = False, hierarchy=0):
             cls = param
             if param_list is None:
                 param_list=[cls]
@@ -137,14 +156,14 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                 param_list = [cls]
             self._partition(param_list) 
 
-        def reduce_gradients_to_owner(param_list=None, hierarchy=0):
+        def reduce_gradients_at_owner(param_list=None, hierarchy=0):
             cls = param
-            print_rank_0(f"{'--'*hierarchy}----Reducing Gradients for param with id {cls.ds_id} to owner")
             if param_list is None:
                 param_list = [cls]
+            print_rank_0(f"{'--'*hierarchy}----Reducing Gradients for param with ids {[param.ds_id for param in param_list]} to owner")
             self._reduce_scatter_gradients(param_list)
-
-        def partition_gradients(param_list=None, partition_buffers=None):
+            
+        def partition_gradients(param_list=None, partition_buffers=None, hierarchy=0):
             cls = param
             print_rank_0(f"{'--'*hierarchy}----Partitioning param gradient with id {cls.ds_id}")
             if param_list is None:
@@ -159,7 +178,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         param.partition = partition
         
         #Collective for averaging gradients
-        param.reduce_gradients_to_owner=reduce_gradients_to_owner
+        param.reduce_gradients_at_owner=reduce_gradients_at_owner
         param.partition_gradients = partition_gradients
 
         
@@ -244,21 +263,23 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         return handle
 
     def _reduce_scatter_gradients(self, param_list):
-        assert any([para.grad is None for param in param_list]), "None gradients cannot be reduce scattered"
-        assert any([param.grad.numel() !=  param.ds_numel for param in param_list]), "Cannot reduce scatter gradients whose size is not same as the params"
+        #print_rank_0([param.grad for param in param_list])
+        #assert any([param.grad is None for param in param_list]), "None gradients cannot be reduce scattered"
         
         handles_and_reduced_partitions = []
         for param in param_list:
-            handles_and_reduced_partitions.append(self._reduce_scatter_gradient(param)
-            
-        for param, handle, reduced_partition in zip(param_list, handles_and_reduced_partitions):
+            assert param.grad.numel() == param.ds_numel, f"{param.grad.numel()} != {param.ds_numel} Cannot reduce scatter gradients whose size is not same as the params"
+        
+            handles_and_reduced_partitions.append(self._reduce_scatter_gradient(param))
+        
+        for param, (handle, reduced_partition) in zip(param_list, handles_and_reduced_partitions):
             handle.wait()
             
             #some ranks may have partitions that are padded to go beyond the grad size. 
             #For these ranks the output of reduce scatter is a separate buffer and needs
             #to be copied in
             partition_size = param.ds_tensor.numel()
-            start = i * partition_size
+            start = self.rank * partition_size
             end = start + partition_size
 
             if start < param.ds_numel and end > param.ds_numel:            
@@ -279,6 +300,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             start = i * partition_size
             end = start + partition_size
 
+            #print("before reduce scatter gradients")
             if start < param.ds_numel and end <= param.ds_numel:
                 input = param.grad.view(-1).narrow(0, start, partition_size)
             else:
@@ -287,7 +309,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                 if start < param.ds_numel:
                     elements = param.ds_numel - start
                     input.narrow(0, 0, elements).copy_(param.grad.view(-1).narrow(0, start, elements))
-            
+            #print("after reduce scatter gradients")
             input_list.append(input)
         
         rank = torch.distributed.get_rank(group=self.ds_process_group)
@@ -303,6 +325,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             self._partition_gradient(param, partition_buffer=partition_buffer)
 
     def _partition_gradient(self, param, partition_buffer=None):
+        #import pdb;pdb.set_trace()
+        #param.grad=None
+        #param.grad.test()
         partition_size = param.ds_tensor.numel()
         
         if partition_buffer is None:
@@ -313,9 +338,10 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         rank = torch.distributed.get_rank(group = self.ds_process_group)
         start = partition_size * rank
         end = start + partition_size
-
+        #print("before partition gradients")
         if start < param.ds_numel:
             elements = min(param.ds_numel-start, partition_size)
             partition_buffer.view(-1).narrow(0, 0, elements).copy_(param.grad.view(-1).narrow(0, start, elements))
-        
+        #print("after partition gradients")
         param.grad.data=partition_buffer.data
+    
