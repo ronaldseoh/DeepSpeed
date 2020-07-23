@@ -87,9 +87,10 @@ def flatten_dense_tensors_aligned(tensor_list, alignment, pg):
     return _flatten_dense_tensors(padded_tensor_list)
 
 
-def move_to_cpu(tensor_list):
-    for tensor in tensor_list:
-        tensor.data = tensor.data.cpu()
+def move_to_cpu(param_list):
+    for param in param_list:
+        param.data = param.data.cpu()
+        param.ds_tensor.data=param.data
 
 #TODO Needs to be implemented
 class PrefetchCoordinator(object):
@@ -398,15 +399,13 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
                     self.dp_process_group).cuda(torch.cuda.current_device()))
             see_memory_usage(f"After flattening and moving param group {i} to GPU")
 
-            if dist.get_rank(group=self.dp_process_group) == 0:
-                see_memory_usage(
-                    f"After Flattening and after emptying param group {i} cache")
-
+            
             # set model fp16 weight to slices of flattened buffer
             updated_params = _unflatten_dense_tensors(self.fp16_groups_flat[i],
                                                       self.fp16_groups[i])
             for p, q in zip(self.fp16_groups[i], updated_params):
                 p.data = q.data
+                p.ds_tensor.data = p.data
 
             #divide the flat weights into near equal paritition equal to the data parallel degree
             #each process will compute on a different part of the partition
@@ -417,6 +416,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             # a partition of the fp32 master weights that will be updated by this process
             self.fp32_groups_flat.append(
                 self.fp16_groups_flat[i].clone().float().detach())
+
+            see_memory_usage(f"After creating fp32 copy {i}")
 
             # modify optimizer of have flat master weight
             self.fp32_groups_flat[i].requires_grad = True  # keep this in case internal optimizer uses it
@@ -430,6 +431,14 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             #self.params_in_partition.append(params_in_partition)
             #self.params_not_in_partition.append(params_not_in_partition)
             #self.first_offset.append(first_offset)
+
+        see_memory_usage("Before initializing optimizer states")
+        self.initialize_optimizer_states()
+        see_memory_usage("After initializing optimizer states")
+
+        if dist.get_rank() == 0:
+            logger.info(f"optimizer state initialized")
+
 
         self.reduce_bucket_size = int(reduce_bucket_size)
         self.allgather_bucket_size = int(allgather_bucket_size)
@@ -523,13 +532,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             self.loss_scaler = LossScaler(scale=static_loss_scale)
             self.cur_iter = 0
 
-        see_memory_usage("Before initializing optimizer states")
-        self.initialize_optimizer_states()
-        see_memory_usage("After initializing optimizer states")
-
-        if dist.get_rank() == 0:
-            logger.info(f"optimizer state initialized")
-
+        
         if dist.get_rank(group=self.dp_process_group) == 0:
             see_memory_usage(f"After initializing ZeRO optimizer")
 

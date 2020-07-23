@@ -36,10 +36,10 @@ class InsertPostInitMethodToModuleSubClasses(object):
     def __enter__(self):
         def partition_after(f):
             def wrapper(module, *args, **kwargs):
-                print('beginning wrapped')
+                print_rank_0(f'Before initializing {module.__class__.__name__}', force=True)
                 f(module, *args, **kwargs)
                 self._post_init_method(module)
-                print('ending wrapped')
+                print_rank_0(f'After initializing followed by post init for {module.__class__.__name__}', force=True)
             
             return wrapper
     
