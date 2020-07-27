@@ -1,5 +1,6 @@
 import torch
 from enum import Enum
+import itertools
 
 def print_rank_0(message, debug=False, force=False):
     if torch.distributed.get_rank() == 0 and (debug or force):
@@ -62,6 +63,8 @@ class InsertPostInitMethodToModuleSubClasses(object):
                 cls._external_params = {}            
             return cls._external_params.items()
 
+        def all_parameters(cls):
+            return itertools.chain(cls.named_parameters(recurse=False), external_parameters(cls))
 
         # Replace .__init__() for all existing subclasses of torch.nn.Module
         for subclass in torch.nn.modules.module.Module.__subclasses__():
@@ -75,6 +78,7 @@ class InsertPostInitMethodToModuleSubClasses(object):
 
         torch.nn.modules.module.Module.ds_register_external_parameter = classmethod(register_external_parameter)
         torch.nn.modules.module.Module.ds_external_parameters = classmethod(external_parameters)
+        torch.nn.modules.module.Module.ds_all_parameters = classmethod(all_parameters)
 
 
     def __exit__(self,exc_type, exc_value, traceback):
@@ -96,6 +100,7 @@ class InsertPostInitMethodToModuleSubClasses(object):
     #To be implemented by inheriting classes
     def _post_init_method(self, module):
         pass
+
 
 
 #Replaces all parameters in module with Scattered Parameters    
