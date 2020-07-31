@@ -64,7 +64,7 @@ class InsertPostInitMethodToModuleSubClasses(object):
             return cls._external_params.items()
 
         def all_parameters(cls):
-            return itertools.chain(cls.named_parameters(recurse=False), external_parameters(cls))
+            return itertools.chain(cls.named_parameters(cls,recurse=False), external_parameters(cls))
 
         # Replace .__init__() for all existing subclasses of torch.nn.Module
         for subclass in torch.nn.modules.module.Module.__subclasses__():
