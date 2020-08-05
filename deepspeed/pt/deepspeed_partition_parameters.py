@@ -1,3 +1,4 @@
+import os
 import torch
 from enum import Enum
 import itertools
@@ -28,18 +29,16 @@ class ZeroParamStatus(Enum):
     #parameters are being gathered.
     INFLIGHT = 3
 
-import os
 
-def new_gpu_tensor(cls, *args):
-    dev = torch.device('cuda:{}'.format(int(os.environ["RANK"]) % torch.cuda.device_count()))
-    print_rank_0("new_gpu_tensor")
-    return torch.ones((1,1), device=dev).new_empty(*args)
+_orig_torch_empty = torch.empty
+def empty_cuda_tensor(*size, **kwargs):
+    kwargs['device'] = torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"]))
+    return _orig_torch_empty(*size, **kwargs)
 
-def empty_gpu_tensor(*size, dtype=None, device=None, requires_grad=False):
-    dev = torch.device('cuda:{}'.format(int(os.environ["RANK"]) % torch.cuda.device_count()))
-    dummy = torch.ones((1,1), device=dev)
-    print_rank_0("new empty tensor")
-    return dummy.new_empty(*size, dtype=dtype, device=dev, requires_grad=requires_grad)
+def new_cuda_tensor(cls, *args):
+    device = torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"]))
+    return torch.ones((1, 1), device=device).new_empty(*args)
+
 
 #Inserts _post_init_method at the end of init method
 #for all sub classes of torch.nn.Module
@@ -90,9 +89,12 @@ class InsertPostInitMethodToModuleSubClasses(object):
 
         #holding on to the current __init__subclass__ for exit
         torch.nn.modules.module.Module._old_init_subclass = torch.nn.modules.module.Module.__init_subclass__
+        torch.Tensor.__old_new__ = torch.Tensor.__new__
 
         # Replace .__init__() for future subclasses of torch.nn.Module
         torch.nn.modules.module.Module.__init_subclass__ = classmethod(_init_subclass)
+        torch.Tensor.__new__ = new_cuda_tensor
+        torch.empty = empty_cuda_tensor
 
         torch.nn.modules.module.Module.ds_register_external_parameter = classmethod(register_external_parameter)
         torch.nn.modules.module.Module.ds_external_parameters = classmethod(external_parameters)
@@ -114,11 +116,13 @@ class InsertPostInitMethodToModuleSubClasses(object):
 
         # Replace .__init__() for future subclasses of torch.nn.Module
         torch.nn.modules.module.Module.__init_subclass__ = torch.nn.modules.module.Module._old_init_subclass
-        
-        torch.Tensor.__new__ = torch.Tensor.__new_original__
-        torch.empty = torch.old_empty
-        #sdelattr(torch.nn.modules.module.Module, 'ds_register_external_parameter')
-        # #delattr(torch.nn.modules.module.Module, 'ds_external_parameters')
+
+        torch.Tensor.__new__ = torch.Tensor.__old_new__
+        torch.empty = _orig_torch_empty
+
+        #delattr(torch.nn.modules.module.Module, 'ds_register_external_parameter')
+        #delattr(torch.nn.modules.module.Module, 'ds_external_parameters')
+
 
     #To be implemented by inheriting classes
     def _post_init_method(self, module):
