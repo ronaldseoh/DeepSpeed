@@ -190,6 +190,8 @@ class DeepSpeedLight(Module):
             if self.dump_state():
                 print_configuration(self, 'DeepSpeedLight')
 
+        self.communication_enabled=True
+
     def _mpi_check(self, args, dist_init_required):
         if hasattr(args, 'deepspeed_mpi') and args.deepspeed_mpi:
             from mpi4py import MPI
@@ -795,7 +797,7 @@ class DeepSpeedLight(Module):
             self.timers('backward_allreduce_microstep').start()
             self.timers('backward_allreduce').start()
 
-        if allreduce_gradients:
+        if allreduce_gradients and self.communication_enabled:
             self.allreduce_gradients()
 
         if self.wall_clock_breakdown():
