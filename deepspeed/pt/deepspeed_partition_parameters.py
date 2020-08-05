@@ -47,10 +47,10 @@ class InsertPostInitMethodToModuleSubClasses(object):
         pass
         
     def __enter__(self):
-        torch.Tensor.__new_original__ = torch.Tensor.__new__
-        torch.old_empty = torch.empty
-        torch.Tensor.__new__ = new_gpu_tensor
-        torch.empty = empty_gpu_tensor
+        # torch.Tensor.__new_original__ = torch.Tensor.__new__
+        # torch.old_empty = torch.empty
+        # torch.Tensor.__new__ = new_gpu_tensor
+        # torch.empty = empty_gpu_tensor
 
         def partition_after(f):
             def wrapper(module, *args, **kwargs):

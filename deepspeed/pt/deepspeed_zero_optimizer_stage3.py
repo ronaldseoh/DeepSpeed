@@ -35,7 +35,7 @@ except ImportError:
     from torch._utils import _flatten_dense_tensors as flatten
     from torch._utils import _unflatten_dense_tensors as unflatten
 
-def print_rank_0(message, debug=True, force=False):
+def print_rank_0(message, debug=False, force=False):
     if torch.distributed.get_rank() == 0 and (debug or force):
         print(message)
 
@@ -467,8 +467,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         self.module = module
         
-        self.param_coordinator = PartitionedParameterCoordinator(comm_stream=torch.cuda.Stream())
-        #self.param_coordinator = PartitionedParameterCoordinator()
+        #self.param_coordinator = PartitionedParameterCoordinator(comm_stream=torch.cuda.Stream())
+        self.param_coordinator = PartitionedParameterCoordinator()
         
         #-------------Stage 3 Setup-------------------#
         #parameters smaller than the threshold will be collectively gathered at the 
