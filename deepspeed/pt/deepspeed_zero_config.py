@@ -17,6 +17,8 @@ ZeRO optimization should be enabled as:
 "session_params": {
   "zero_optimization": {
     "stage": [0|1|2],
+    "stage3_max_live_parameters" : 1000000000,
+    "stage3_max_reuse_distance" : 1000000000,
     "allgather_partitions": [true|false],
     "allgather_bucket_size": 500000000,
     "reduce_scatter": [true|false],
@@ -58,7 +60,25 @@ ZERO_OPTIMIZATION_REDUCE_BUCKET_SIZE_DEFAULT = 500000000
 
 ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE = 'allgather_bucket_size'
 ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE_DEFAULT = 500000000
+
 ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE_DEPRECATED = 'allgather_size'
+
+#maximum number of parameters per GPU before releasing them
+ZERO_OPTIMIZATION_MAX_LIVE_PARAMETERS = 'stage3_max_live_parameters'
+ZERO_OPTIMIZATION_MAX_LIVE_PARAMETERS_DEFAULT = 1000000000
+
+#release a parameter only if the reuse distance is larger than specified
+ZERO_OPTIMIZATION_MAX_REUSE_DISTANCE = 'stage3_max_reuse_distance'
+ZERO_OPTIMIZATION_MAX_REUSE_DISTANCE_DEFAULT = 1000000000
+
+ZERO_OPTIMIZATION_PREFETCH_BUCKET_SIZE = 'stage3_prefetch_bucket_size'
+ZERO_OPTIMIZATION_PREFETCH_BUCKET_SIZE_DEFAULT = 50000000
+
+#parameters smaller than the threshold are only communicated once after the 
+#parameters are updated and are persisted thoughout the trainging
+#avoid tons of latency bound communication
+ZERO_OPTIMIZATION_PARAM_PERSISTENCE_THRESHOLD = 'stage3_param_persistence_threshold'
+ZERO_OPTIMIZATION_PARAM_PERSISTENCE_THRESHOLD_DEFAULT = 100000
 
 ZERO_OPTIMIZATION_DEFAULT = {
     ZERO_OPTIMIZATION_STAGE: ZERO_OPTIMIZATION_STAGE_DEFAULT,
@@ -69,7 +89,15 @@ ZERO_OPTIMIZATION_DEFAULT = {
     ZERO_OPTIMIZATION_ALLGATHER_PARTITIONS:
     ZERO_OPTIMIZATION_ALLGATHER_PARTITIONS_DEFAULT,
     ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE:
-    ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE_DEFAULT
+    ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE_DEFAULT,
+    ZERO_OPTIMIZATION_MAX_LIVE_PARAMETERS:
+    ZERO_OPTIMIZATION_MAX_LIVE_PARAMETERS_DEFAULT,
+    ZERO_OPTIMIZATION_MAX_REUSE_DISTANCE:
+    ZERO_OPTIMIZATION_MAX_REUSE_DISTANCE_DEFAULT,
+    ZERO_OPTIMIZATION_PREFETCH_BUCKET_SIZE:
+    ZERO_OPTIMIZATION_PREFETCH_BUCKET_SIZE_DEFAULT,
+    ZERO_OPTIMIZATION_PARAM_PERSISTENCE_THRESHOLD:
+    ZERO_OPTIMIZATION_PARAM_PERSISTENCE_THRESHOLD_DEFAULT
 }
 
 
@@ -84,6 +112,12 @@ class DeepSpeedZeroConfig(object):
         self.allgather_partitions = None
         self.allgather_bucket_size = None
         self.overlap_comm = None
+
+        #Stage3 Specific Parameters
+        self.prefetch_bucket_size = None
+        self.param_persistence_threshold = None
+        self.max_live_parameters = None
+        self.max_reuse_distance = None
 
         if ZERO_OPTIMIZATION in param_dict.keys():
             zero_config_dict = param_dict[ZERO_OPTIMIZATION]
@@ -148,3 +182,25 @@ class DeepSpeedZeroConfig(object):
             zero_config_dict,
             ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE,
             ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE_DEFAULT)
+
+        self.max_live_parameters = get_scalar_param(
+            zero_config_dict,
+            ZERO_OPTIMIZATION_MAX_LIVE_PARAMETERS,
+            ZERO_OPTIMIZATION_MAX_LIVE_PARAMETERS_DEFAULT)
+
+        self.max_reuse_distance = get_scalar_param(
+            zero_config_dict,
+            ZERO_OPTIMIZATION_MAX_REUSE_DISTANCE,
+            ZERO_OPTIMIZATION_MAX_REUSE_DISTANCE_DEFAULT)
+
+        self.prefetch_bucket_size = get_scalar_param(
+            zero_config_dict,
+            ZERO_OPTIMIZATION_PREFETCH_BUCKET_SIZE,
+            ZERO_OPTIMIZATION_PREFETCH_BUCKET_SIZE_DEFAULT)
+
+        self.param_persistence_threshold = get_scalar_param(
+            zero_config_dict,
+            ZERO_OPTIMIZATION_PARAM_PERSISTENCE_THRESHOLD,
+            ZERO_OPTIMIZATION_PARAM_PERSISTENCE_THRESHOLD_DEFAULT)
+
+

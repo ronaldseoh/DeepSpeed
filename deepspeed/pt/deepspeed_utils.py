@@ -248,26 +248,29 @@ def is_model_parallel_parameter(p):
     return hasattr(p, 'model_parallel') and p.model_parallel
 
 
-def see_memory_usage(message):
-    return
+def see_memory_usage(message, force=False):
+    if not force:
+        return
     if torch.distributed.is_initialized() and not torch.distributed.get_rank() == 0:
         return
 
     # Print message except when distributed but not rank 0
     logger.info(message)
     logger.info(
-        "Memory Allocated %s GigaBytes ",
-        torch.cuda.memory_allocated() / (1024 * 1024 * 1024),
+        f"MA {round(torch.cuda.memory_allocated() / (1024 * 1024 * 1024),2 )} GB \
+        Max_MA {round(torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024),2)} GB \
+        CA {round(torch.cuda.memory_cached() / (1024 * 1024 * 1024),2)} GB \
+        Max_CA {round(torch.cuda.max_memory_cached() / (1024 * 1024 * 1024))} GB"
     )
-    logger.info(
-        "Max Memory Allocated %s GigaBytes",
-        torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024),
-    )
-    logger.info(
-        "Cache Allocated %s GigaBytes",
-        torch.cuda.memory_cached() / (1024 * 1024 * 1024),
-    )
-    logger.info(
-        "Max cache Allocated %s GigaBytes",
-        torch.cuda.max_memory_cached() / (1024 * 1024 * 1024),
-    )
+    # logger.info(
+    #     "Max Memory Allocated %s GigaBytes",
+    #     torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024),
+    # )
+    # logger.info(
+    #     "Cache Allocated %s GigaBytes",
+    #     torch.cuda.memory_cached() / (1024 * 1024 * 1024),
+    # )
+    # logger.info(
+    #     "Max cache Allocated %s GigaBytes",
+    #     torch.cuda.max_memory_cached() / (1024 * 1024 * 1024),
+    # )

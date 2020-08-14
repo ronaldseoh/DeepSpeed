@@ -2,8 +2,9 @@ import os
 import torch
 from enum import Enum
 import itertools
+from deepspeed.pt.deepspeed_linear import LinearModuleForZeroStage3, LinearFunctionForZeroStage3
 
-def print_rank_0(message, debug=False, force=False):
+def print_rank_0(message, debug=True, force=False):
     if torch.distributed.get_rank() == 0 and (debug or force):
         print(message)
 
@@ -39,12 +40,14 @@ def new_cuda_tensor(cls, *args):
     device = torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"]))
     return torch.ones((1, 1), device=device).new_empty(*args)
 
+reuse_buffers=False
+empty_buffers = {}
 
 #Inserts _post_init_method at the end of init method
 #for all sub classes of torch.nn.Module
 class InsertPostInitMethodToModuleSubClasses(object):
-    def __init__(self):
-        pass
+    def __init__(self, zero_modules=False):
+        self.zero_modules=zero_modules
         
     def __enter__(self):
         # torch.Tensor.__new_original__ = torch.Tensor.__new__
@@ -100,9 +103,17 @@ class InsertPostInitMethodToModuleSubClasses(object):
         torch.nn.modules.module.Module.ds_external_parameters = classmethod(external_parameters)
         torch.nn.modules.module.Module.ds_all_parameters = classmethod(all_parameters)
 
-        
+        if self.zero_modules:
+            linear_bk = torch.nn.functional.linear
+            torch.nn.functional.linear = LinearFunctionForZeroStage3.apply
 
-
+            # torch.nn.modules.linear.Linear_bk = torch.nn.modules.linear.Linear
+            # torch.nn.Linear_bk = torch.nn.Linear
+            # torch.nn.modules.linear.Linear = LinearModuleForZeroStage3
+            # torch.nn.Linear = LinearModuleForZeroStage3
+            
+            
+            
 
     def __exit__(self,exc_type, exc_value, traceback):
         if exc_type is not None:
@@ -120,6 +131,12 @@ class InsertPostInitMethodToModuleSubClasses(object):
         torch.Tensor.__new__ = torch.Tensor.__old_new__
         torch.empty = _orig_torch_empty
 
+        if self.zero_modules:
+            # torch.nn.modules.linear.Linear = torch.nn.modules.linear.Linear_bk
+            # torch.nn.Linear = torch.nn.Linear_bk
+            # delattr(torch.nn.modules.linear, 'Linear_bk')
+            print_rank_0("Using ZeRO Linear")
+        
         #delattr(torch.nn.modules.module.Module, 'ds_register_external_parameter')
         #delattr(torch.nn.modules.module.Module, 'ds_external_parameters')
 
@@ -134,13 +151,13 @@ class InsertPostInitMethodToModuleSubClasses(object):
 class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
     param_id = 0
 
-    def __init__(self, ds_group=None):
-        super(ScatteredParameters, self).__init__()
+    def __init__(self, ds_group=None, zero_modules=False):
+        super(ScatteredParameters, self).__init__(zero_modules=zero_modules)
         assert torch.distributed.is_initialized(), "Parameters cannot be scattered without initializing torch.distributed"
         self.ds_process_group = torch.distributed.group.WORLD if ds_group is None else ds_group
         self.rank = torch.distributed.get_rank(group = self.ds_process_group)
         self.world_size = torch.distributed.get_world_size(group = self.ds_process_group)
-
+        
 
     def _post_init_method(self, module):
         print_rank_0(f'Converting Params in {module.__class__.__name__}', force=True )
@@ -253,6 +270,12 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         assert param.ds_status is not ZeroParamStatus.INFLIGHT, f" {param} Cannot parititon a param in flight"
         #print_rank_0(f"Param id {param.ds_id} status is {param.ds_status}")
         if param.ds_status is ZeroParamStatus.AVAILABLE:
+            
+            if reuse_buffers and param.ds_numel == 16384 * 16384 * 4 or param.ds_numel == 16384 * 16384:
+                buffer = param.data
+                print_rank_0("Returning buffer for param {param.ds_id} with numel {param.ds_numel} to empty buffers", force=True)
+                empty_buffers[id(buffer)] = buffer
+
             if param.ds_tensor is not None:
                 param.data = param.ds_tensor.data
                 return
@@ -278,7 +301,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
             param.ds_tensor = partitioned_tensor
             param.data = param.ds_tensor.data
-
+            
             
             #print(f"ID {param.ds_id} partitioned and contains {param.data.shape}")
 
@@ -293,8 +316,28 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #self._param_status(param)
         partition_size = param.data.numel()
         tensor_size = partition_size * self.world_size
-        flat_tensor = torch.zeros(param.ds_shape, dtype=param.dtype, device=param.device).view(-1)
+        
+        global empty_buffers, reuse_buffers
 
+        
+        flat_tensor = None
+        buffer_key = None
+        if reuse_buffers:
+            #print(f"{empty_buffers}")
+            for key, t in empty_buffers.items():
+                if t.numel() == param.ds_numel:
+                    flat_tensor = t.view(-1)
+                    buffer_key = key
+                    print_rank_0(f"Buffer reused for allgather of param {param.ds_id} with {param.ds_numel} elements", force=True)
+        if buffer_key:
+            empty_buffers.pop(buffer_key)
+            assert buffer_key not in empty_buffers, "Empty buffers contains the tensor after removing"
+
+        print_rank_0(f"{'--'* hierarchy}---- Before allocating Allgather param with id {param.ds_id} and status {param.ds_status} Partition Size {partition_size} and data shape {param.ds_shape}")            
+        if flat_tensor is None:
+            flat_tensor = torch.zeros(param.ds_shape, dtype=param.dtype, device=param.device).view(-1)
+            torch.cuda.synchronize()
+            
         print_rank_0(f"{'--'* hierarchy}----Allgather param with id {param.ds_id} and status {param.ds_status} Partition Size {partition_size} and data shape {param.ds_shape}")
         if not flat_tensor.numel() > 100000:
             replicated_tensor = flat_tensor.narrow(0, 0, param.ds_numel).view(param.ds_shape)
@@ -377,7 +420,8 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             handles_and_reduced_partitions.append(self._reduce_scatter_gradient(param))
         
         for param, (handle, reduced_partition) in zip(param_list, handles_and_reduced_partitions):
-            handle.wait()
+            if handle is not None:
+                handle.wait()
             
             #some ranks may have partitions that are padded to go beyond the grad size. 
             #For these ranks the output of reduce scatter is a separate buffer and needs
@@ -385,9 +429,10 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             partition_size = param.ds_tensor.numel()
             start = self.rank * partition_size
             end = start + partition_size
-
-            if start < param.ds_numel and end > param.ds_numel:            
-                param.grad.view(-1).narrow(0, start, elements).copy_(input_list[rank].narrow(0, 0, elements))
+            #print_rank_0("REduce scatter was executed for praam {param.ds_id}")
+            if start < param.ds_numel and end > param.ds_numel:
+                elements = param.ds_numel - start            
+                param.grad.view(-1).narrow(0, start, elements).copy_(reduced_partition.narrow(0, 0, elements))
 
 
         
