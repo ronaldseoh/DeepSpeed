@@ -195,6 +195,8 @@ class DeepSpeedEngine(Module):
             if self.dump_state():
                 print_configuration(self, 'DeepSpeedLight')
 
+        self.communication_enabled=True
+
     def _mpi_check(self, args, dist_init_required):
         if hasattr(args, 'deepspeed_mpi') and args.deepspeed_mpi:
             from mpi4py import MPI
@@ -847,7 +849,11 @@ class DeepSpeedEngine(Module):
             self.timers('backward_allreduce_microstep').start()
             self.timers('backward_allreduce').start()
 
+<<<<<<< HEAD:deepspeed/runtime/engine.py
         if allreduce_gradients and self.enable_backward_allreduce:
+=======
+        if allreduce_gradients and self.communication_enabled:
+>>>>>>> 48c74dc... Overlap+Prefetching+persistent weights seems to be working:deepspeed/pt/deepspeed_light.py
             self.allreduce_gradients()
 
         if self.wall_clock_breakdown():

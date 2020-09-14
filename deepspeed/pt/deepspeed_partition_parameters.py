@@ -28,6 +28,19 @@ class ZeroParamStatus(Enum):
     #parameters are being gathered.
     INFLIGHT = 3
 
+import os
+
+def new_gpu_tensor(cls, *args):
+    dev = torch.device('cuda:{}'.format(int(os.environ["RANK"]) % torch.cuda.device_count()))
+    print_rank_0("new_gpu_tensor")
+    return torch.ones((1,1), device=dev).new_empty(*args)
+
+def empty_gpu_tensor(*size, dtype=None, device=None, requires_grad=False):
+    dev = torch.device('cuda:{}'.format(int(os.environ["RANK"]) % torch.cuda.device_count()))
+    dummy = torch.ones((1,1), device=dev)
+    print_rank_0("new empty tensor")
+    return dummy.new_empty(*size, dtype=dtype, device=dev, requires_grad=requires_grad)
+
 #Inserts _post_init_method at the end of init method
 #for all sub classes of torch.nn.Module
 class InsertPostInitMethodToModuleSubClasses(object):
@@ -35,6 +48,11 @@ class InsertPostInitMethodToModuleSubClasses(object):
         pass
         
     def __enter__(self):
+        torch.Tensor.__new_original__ = torch.Tensor.__new__
+        torch.old_empty = torch.empty
+        torch.Tensor.__new__ = new_gpu_tensor
+        torch.empty = empty_gpu_tensor
+
         def partition_after(f):
             def wrapper(module, *args, **kwargs):
                 print_rank_0(f'Before initializing {module.__class__.__name__}', force=True)
@@ -80,6 +98,9 @@ class InsertPostInitMethodToModuleSubClasses(object):
         torch.nn.modules.module.Module.ds_external_parameters = classmethod(external_parameters)
         torch.nn.modules.module.Module.ds_all_parameters = classmethod(all_parameters)
 
+        
+
+
 
     def __exit__(self,exc_type, exc_value, traceback):
         if exc_type is not None:
@@ -93,9 +114,11 @@ class InsertPostInitMethodToModuleSubClasses(object):
 
         # Replace .__init__() for future subclasses of torch.nn.Module
         torch.nn.modules.module.Module.__init_subclass__ = torch.nn.modules.module.Module._old_init_subclass
-
-        #delattr(torch.nn.modules.module.Module, 'ds_register_external_parameter')
-        #delattr(torch.nn.modules.module.Module, 'ds_external_parameters')
+        
+        torch.Tensor.__new__ = torch.Tensor.__new_original__
+        torch.empty = torch.old_empty
+        #sdelattr(torch.nn.modules.module.Module, 'ds_register_external_parameter')
+        # #delattr(torch.nn.modules.module.Module, 'ds_external_parameters')
 
     #To be implemented by inheriting classes
     def _post_init_method(self, module):
@@ -144,6 +167,10 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #Keeps track of how many active sub-modules need this param at any given point in time
         param.ds_active_sub_modules = 0
 
+        #If this flag is true, then the parameters are replicated throughput training
+        #And only partitioned before the step 
+        param.ds_persist = False
+
         #DeepSped Param ID
         param.ds_id = ScatteredParameters.param_id
         ScatteredParameters.param_id += 1
@@ -189,26 +216,34 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         
     def _all_gather(self, param_list, async_op=False, hierarchy=None):
         handles = []
+        all_gather_list = []
         for param in param_list:
             if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
-                handle = self._allgather_param(param, async_op = async_op, hierarchy=hierarchy)
-                param.ds_status = ZeroParamStatus.INFLIGHT if async_op else ZeroParamStatus.AVAILABLE
-                handles.append(handle)
-                    
-        if async_op:
-            return handles
-        else:
-            return None
-
-    def _partition(self, param_list):
+                if async_op:
+                    handle = self._allgather_param(param, async_op = async_op, hierarchy=hierarchy)    
+                    param.ds_status = ZeroParamStatus.INFLIGHT #if async_op else ZeroParamStatus.AVAILABLE
+                    handles.append(handle)
+                else:
+                    all_gather_list.append(param)        
+        
+        if not async_op:
+            ret_value = self._allgather_params(all_gather_list, hierarchy = hierarchy)
+            param.ds_status = ZeroParamStatus.AVAILABLE
+            return ret_value
+        
+        return handles
+    
+    def _partition(self, param_list, force=False):
         for param in param_list:
-            #print_rank_0(f"Partitioning Param {param.ds_id}")
+            #print_rank_0(f"Before Partitioning Param {param.ds_id}")
+            #self._param_status(param)
             self._partition_param(param)
             param.ds_status = ZeroParamStatus.NOT_AVAILABLE
             if param.ds_tensor is not None:
                 assert id(param.data) == id(param.ds_tensor.data), \
                 "After the parameters are initially partitioned, make sure we are not recreating the partition."
-           
+            #print_rank_0(f"After Partitioning Param {param.ds_id}")
+            #self._param_status(param)
 
     def _partition_param(self, param):
         assert param.ds_status is not ZeroParamStatus.INFLIGHT, f" {param} Cannot parititon a param in flight"
@@ -243,13 +278,24 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             
             #print(f"ID {param.ds_id} partitioned and contains {param.data.shape}")
 
+    def _param_status(self, param):
+        if param.ds_tensor is not None:
+            print_rank_0(f"Param id {param.ds_id}, param status: {param.ds_status}, param numel {param.ds_numel}, partitioned numel {param.ds_tensor.numel()}, data numel {param.data.numel()}")
+        else:
+            print_rank_0(f"Param id {param.ds_id}, param status: {param.ds_status}, param numel {param.ds_numel}, partitioned ds_tensor {param.ds_tensor}, data numel {param.data.numel()}")
+
     def _allgather_param(self, param, async_op=False, hierarchy=0):
         
+        #self._param_status(param)
         partition_size = param.data.numel()
         tensor_size = partition_size * self.world_size
         flat_tensor = torch.zeros(param.ds_shape, dtype=param.dtype, device=param.device).view(-1)
 
-        print_rank_0(f"{'--'* hierarchy}----Allgather param with id {param.ds_id} Partition Size {partition_size} and data shape {param.ds_shape}")
+        print_rank_0(f"{'--'* hierarchy}----Allgather param with id {param.ds_id} and status {param.ds_status} Partition Size {partition_size} and data shape {param.ds_shape}")
+        if not flat_tensor.numel() > 100000:
+            replicated_tensor = flat_tensor.narrow(0, 0, param.ds_numel).view(param.ds_shape)
+            param.data = replicated_tensor.data
+            return None
         partitions = []        
         for i in range(self.world_size):
         
@@ -266,6 +312,55 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #print(f"........ID {param.ds_id} gathered and contains {param.shape} and gradient {param.grad}")
 
         return handle
+
+    def _allgather_params(self, param_list, hierarchy = 0):
+        # for param in param_list:
+        #     replicated_tensor = torch.empty(param.ds_shape, dtype=param.dtype, device=param.device)
+        #     param.data = replicated_tensor.data
+        # return None
+        partition_size = sum([param.data.numel() for param in param_list])
+        tensor_size = partition_size * self.world_size
+        flat_tensor = torch.empty(tensor_size, dtype=param_list[0].dtype, device = param_list[0].device)
+
+        partitions = []
+        for i in range(self.world_size):
+            start = partition_size * i
+            
+            partitions.append(flat_tensor.narrow(0, start, partition_size))
+            
+            if i == self.rank:
+                offset = 0
+                for param in param_list:
+                    param_numel = param.data.numel()
+                    partitions[i].narrow(0,offset, param_numel).copy_(param.data)
+                    offset += param_numel
+
+        torch.distributed.all_gather(partitions, partitions[self.rank], group = self.ds_process_group, async_op = False)
+        
+        param_offset = 0
+            
+        for param in param_list:
+            
+            param_partition_size = param.data.numel()
+            
+            param_size = param.ds_numel 
+            replicated_tensor = torch.empty(param.ds_shape, dtype=param.dtype, device=param.device)
+
+            for i in range(self.world_size):
+                
+                start = i * partition_size
+                
+                param_start = i * param_partition_size   
+                
+                if param_start < param_size:
+                    numel_to_copy = min(param_size-param_start, param_partition_size)
+                    part_to_copy = partitions[i].narrow(0, param_offset, param_partition_size)
+                    
+                    replicated_tensor.view(-1).narrow(0, param_start, numel_to_copy).copy_(part_to_copy) 
+            param_offset += param.data.numel()
+            param.data = replicated_tensor.data    
+            
+        return None
 
     def _reduce_scatter_gradients(self, param_list):
         #print_rank_0([param.grad for param in param_list])
