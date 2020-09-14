@@ -169,6 +169,7 @@ if BUILD_MASK & DS_BUILD_CPU_ADAM:
                               '-gencode',
                               'arch=compute_70,code=compute_70',
                               '-std=c++14',
+<<<<<<< HEAD
                               '-U__CUDA_NO_HALF_OPERATORS__',
                               '-U__CUDA_NO_HALF_CONVERSIONS__',
                               '-U__CUDA_NO_HALF2_OPERATORS__'
@@ -304,6 +305,48 @@ with open('deepspeed/git_version_info.py', 'w') as fd:
     fd.write(f"installed_ops={install_ops}\n")
 
 print(f'install_requires={install_requires}')
+=======
+                              '-g',
+                              '-Wno-reorder'],
+                      'nvcc': [
+                          '-O3',
+                          '--use_fast_math',
+                          '-gencode',
+                          'arch=compute_61,code=compute_61',
+                          '-gencode',
+                          'arch=compute_70,code=compute_70',
+                          '-std=c++14',
+                          '-U__CUDA_NO_HALF_OPERATORS__',
+                          '-U__CUDA_NO_HALF_CONVERSIONS__',
+                          '-U__CUDA_NO_HALF2_OPERATORS__',
+                          '-D__STOCHASTIC_MODE__'
+                      ]
+                  }),
+    CppExtension(name='deepspeed_aio',
+                 sources=[
+                     'csrc/aio/py_lib/py_ds_aio.cpp',
+                     'csrc/aio/py_lib/deepspeed_py_aio.cpp',
+                     'csrc/aio/py_lib/deepspeed_py_aio_handle.cpp',
+                     'csrc/aio/py_lib/deepspeed_aio_thread.cpp',
+                     'csrc/aio/common/deepspeed_aio_utils.cpp',
+                     'csrc/aio/common/deepspeed_aio_common.cpp',
+                     'csrc/aio/common/deepspeed_aio_types.cpp'
+                 ],
+                 include_dirs=['csrc/aio/py_lib',
+                               'csrc/aio/common'],
+                 libraries=['aio'],
+                 extra_compile_args={
+                     'cxx': ['-g',
+                             '-Wall',
+                             '-O0',
+                             '-std=c++14',
+                             '-shared',
+                             '-fPIC']
+                 },
+                 extra_link_args=['-laio'],
+                 undef_macros=['NDEBUG']),
+]
+>>>>>>> 8aca9e8... Add Asynchronous I/O library (#72)
 
 setup(name='deepspeed',
       version=f"{VERSION}+{git_hash}",
