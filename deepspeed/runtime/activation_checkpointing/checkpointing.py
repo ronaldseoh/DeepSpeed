@@ -25,19 +25,19 @@ from deepspeed.runtime.config import DeepSpeedConfig
 from deepspeed.utils import logger
 from deepspeed.utils.timer import SynchronizedWallClockTimer as Timers
 
-#DeepSpeed Checkpointing Enabled or Disabled
+# DeepSpeed Checkpointing Enabled or Disabled
 deepspeed_checkpointing_enabled = False
 
-#MP parameters
+# MP parameters
 mpu = None
 mp_rank = None
 mp_size = None
 mp_group = None
 
-#Model Parameters
+# Model Parameters
 num_layers = None
 
-#Checkpointing buffers
+# Checkpointing buffers
 contiguous_data_buffers = []
 data_offsets = []
 
@@ -46,7 +46,7 @@ size_offsets = []
 
 timers = None
 
-#optimization flags
+# optimization flags
 PARTITION_ACTIVATIONS = False
 PA_TO_CPU = False
 CONTIGUOUS_CHECKPOINTING = False
@@ -55,10 +55,10 @@ PROFILE_TIME = False
 
 
 def see_memory_usage(message, force=False):
-    #return
+    # return
     if not force:
         return
-    #dist.barrier()
+    # dist.barrier()
     if dist.get_rank() == 0:
         logger.info(message)
         logger.info(
@@ -153,6 +153,7 @@ class CudaRNGStatesTracker:
     rng state, we can perform operations and return to our starting
     cuda state.
     """
+
     def __init__(self):
         # Map from a string name to the cuda rng state.
         self.states_ = {}
@@ -370,7 +371,7 @@ class CheckpointFunction(torch.autograd.Function):
 
         if PARTITION_ACTIVATIONS:
             #inputs = [item.detach().contiguous().view(-1).narrow(0, get_partition_start(item), get_partition_size(item)).clone() for item in args[:-1]]
-            #inputs.append(args[-1])
+            # inputs.append(args[-1])
 
             inputs = []
             for i, item in enumerate(args[:-1]):
@@ -413,7 +414,7 @@ class CheckpointFunction(torch.autograd.Function):
 
             inputs.append(args[-1])
 
-        #just in case something funky is happening such as reuse of inputs
+        # just in case something funky is happening such as reuse of inputs
         inputs_cuda = [item.to(cuda_device) for item in args]
 
         # Copy the rng states.
@@ -422,15 +423,15 @@ class CheckpointFunction(torch.autograd.Function):
         ctx.fwd_cuda_rng_state_tracker = get_cuda_rng_tracker().get_states()
 
         see_memory_usage("Before running forward on the layer", force=True)
-        #ctx.save_for_backward(*args)
+        # ctx.save_for_backward(*args)
         with torch.no_grad():
             outputs = run_function(*inputs_cuda)
 
         see_memory_usage("After running forward on the layer", force=True)
         del inputs_cuda
 
-        #with torch.cuda.stream(transport_stream):
-        #if PARTITION_ACTIVATIONS:
+        # with torch.cuda.stream(transport_stream):
+        # if PARTITION_ACTIVATIONS:
         #    new_args = []
         #    for arg, inp in zip(args,inputs):
         #        size= torch.tensor(arg.size())
@@ -472,7 +473,7 @@ class CheckpointFunction(torch.autograd.Function):
                     new_args.append(contiguous_size)
                 else:
                     new_args.append(size)
-                #if dist.get_rank() == 0:
+                # if dist.get_rank() == 0:
                 #    logger.info(f"The stored tensor is {contiguous_size} and orginal one is {size} ")
 
             ctx.save_for_backward(*new_args)
@@ -493,9 +494,9 @@ class CheckpointFunction(torch.autograd.Function):
     def backward(ctx, *args):
         global timers
         see_memory_usage("In backward", force=True)
-        #removing pointers to the contiguous buffer memory
-        #so that they can be garbage collected once the checkpoints
-        #have been used
+        # removing pointers to the contiguous buffer memory
+        # so that they can be garbage collected once the checkpoints
+        # have been used
         if SYNCHRONIZE:
             torch.cuda.synchronize()
         if PROFILE_TIME:
@@ -508,8 +509,8 @@ class CheckpointFunction(torch.autograd.Function):
             for buffers in contiguous_data_buffers:
                 buffers = []
 
-            #frees up all the pointers to the checkpoints except for the ones
-            #stored by save for backward
+            # frees up all the pointers to the checkpoints except for the ones
+            # stored by save for backward
             contiguous_data_buffers = []
             contiguous_size_buffers = []
             data_offsets = []
@@ -523,7 +524,7 @@ class CheckpointFunction(torch.autograd.Function):
         global cuda_device, transport_stream, PARTITION_ACTIVATIONS
 
         if PARTITION_ACTIVATIONS:
-            #with torch.cuda.stream(transport_stream):
+            # with torch.cuda.stream(transport_stream):
             inputs = get_full_inputs(ctx.saved_tensors,
                                      device=cuda_device if PA_TO_CPU else None)
             detached_inputs = detach_variable(inputs)
@@ -622,8 +623,8 @@ def reset():
         for buffers in contiguous_data_buffers:
             buffers = []
 
-        #frees up all the pointers to the checkpoints except for the ones
-        #stored by save for backward
+        # frees up all the pointers to the checkpoints except for the ones
+        # stored by save for backward
         contiguous_data_buffers = []
         contiguous_size_buffers = []
         data_offsets = []
@@ -632,7 +633,7 @@ def reset():
 
 def _configure_using_config_file(deepspeed_config, mpu=None):
     global num_layers, PARTITION_ACTIVATIONS, CONTIGUOUS_CHECKPOINTING, \
-            PA_TO_CPU, SYNCHRONIZE, PROFILE_TIME
+        PA_TO_CPU, SYNCHRONIZE, PROFILE_TIME
 
     config = DeepSpeedConfig(deepspeed_config, mpu=mpu).activation_checkpointing_config
     logger.info(config.repr())
@@ -649,7 +650,7 @@ def _configure_defaults():
     global mpu, num_layers, deepspeed_checkpointing_enabled
 
     global PARTITION_ACTIVATIONS, CONTIGUOUS_CHECKPOINTING, \
-            PA_TO_CPU, SYNCHRONIZE, PROFILE_TIME
+        PA_TO_CPU, SYNCHRONIZE, PROFILE_TIME
 
     PARTITION_ACTIVATIONS = False
     CONTIGUOUS_CHECKPOINTING = False
@@ -708,7 +709,7 @@ def configure(
     global mpu, num_layers, deepspeed_checkpointing_enabled
 
     global PARTITION_ACTIVATIONS, CONTIGUOUS_CHECKPOINTING, \
-            PA_TO_CPU, SYNCHRONIZE, PROFILE_TIME
+        PA_TO_CPU, SYNCHRONIZE, PROFILE_TIME
 
     _configure_defaults()
 
