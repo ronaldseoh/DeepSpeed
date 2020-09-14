@@ -325,6 +325,21 @@ class DeepSpeedEngine(Module):
     def zero_load_from_fp32_weights(self):
         return self._config.zero_config.load_from_fp32_weights
 
+    def zero_max_live_parameters(self):
+        return self._config.zero_config.max_live_parameters
+
+    def zero_max_reuse_distance(self):
+        return self._config.zero_config.max_reuse_distance
+
+    def zero_prefetch_bucket_size(self):
+        return self._config.zero_config.prefetch_bucket_size
+
+    def zero_param_persistence_threshold(self):
+        return self._config.zero_config.param_persistence_threshold
+
+    def allgather_size(self):
+        return self._config.allgather_size
+
     def fp16_enabled(self):
         return self._config.fp16_enabled
 
@@ -659,7 +674,10 @@ class DeepSpeedEngine(Module):
                 clip_grad=self.gradient_clipping(),
                 contiguous_gradients=self.zero_contiguous_gradients(),
                 reduce_bucket_size=self.zero_reduce_bucket_size(),
-                allgather_bucket_size=self.zero_allgather_bucket_size(),
+                prefetch_bucket_size=self.zero_prefetch_bucket_size(),
+                max_reuse_distance=self.zero_max_reuse_distance(),
+                max_live_parameters=self.zero_max_live_parameters(),
+                param_persistence_threshold=self.zero_param_persistence_threshold(),
                 dp_process_group=self.data_parallel_group,
                 reduce_scatter=self.zero_reduce_scatter(),
                 overlap_comm=self.zero_overlap_comm(),

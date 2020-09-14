@@ -35,7 +35,7 @@ except ImportError:
     from torch._utils import _flatten_dense_tensors as flatten
     from torch._utils import _unflatten_dense_tensors as unflatten
 
-def print_rank_0(message, debug=False, force=False):
+def print_rank_0(message, debug=True, force=False):
     if torch.distributed.get_rank() == 0 and (debug or force):
         print(message)
 
@@ -268,7 +268,7 @@ class PartitionedParameterCoordinator(object):
                 self._increment_available_parameter_numel(param.ds_numel)
         
         self._print_prefetch_elements_info(sub_module, params_to_prefetch)         
-        print_rank_0(f"{'--' * self.hierarchy}--PreFetching parameters {[param.ds_id for param in params_to_prefetch]} and available {self.total_available_parameter_numel}, max limit {self.max_available_parameters_in_numel}", force = False)
+        print_rank_0(f"{'--' * self.hierarchy}--PreFetching parameters {[param.ds_id for param in params_to_prefetch]} and available {self.total_available_parameter_numel}, max limit {self.max_available_parameters_in_numel}", force = True)
     
     def _print_prefetch_elements_info(self, sub_module, params_to_prefetch):
         sub_module_numel = 0.0
@@ -339,14 +339,18 @@ class PartitionedParameterCoordinator(object):
         for param in params_to_release:
             param.ds_active_sub_modules -= 1
             if not param.ds_active_sub_modules and not self._keep_for_later(sub_module) and not param.ds_persist:
-                print_rank_0(f"{'--' * self.hierarchy}--Releasing parameters {param.ds_id} with active sub modules {param.ds_active_sub_modules} and keep for later {self._keep_for_later(sub_module)}")
+                print_rank_0(f"{'--' * self.hierarchy}--Releasing parameters {param.ds_id} with numel {param.numel()} active sub modules {param.ds_active_sub_modules} and keep for later {self._keep_for_later(sub_module)}")
                 
                 #Keeping track of number of elements that are consumed by available parameters
                 self._decrement_available_parameter_numel(param.ds_numel)
+                see_memory_usage(f"Before releasing param {param.ds_id} with numel{param.numel()}",force=True)
                 param.partition(hierarchy=self.hierarchy)
+                see_memory_usage(f"After releasing param {param.ds_id} has numel{param.numel()} ",force=True)
+                
                 param.ds_status = ZeroParamStatus.NOT_AVAILABLE
             else:
-                print_rank_0(f"{'--' * self.hierarchy}--Did not release parameters {param.ds_id} with active sub modules {param.ds_active_sub_modules}, keep for later {self._keep_for_later(sub_module)} and persistence {param.ds_persist}")
+                
+                print_rank_0(f"{'--' * self.hierarchy}--Did not release parameters {param.ds_id} with numel {param.numel()} with active sub modules {param.ds_active_sub_modules}, keep for later {self._keep_for_later(sub_module)} and persistence {param.ds_persist}")
 
     def release_and_reset_parameter(self,param):
         param.ds_active_sub_modules = 0
@@ -439,7 +443,10 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
                  verbose=True,
                  contiguous_gradients=True,
                  reduce_bucket_size=500000000,
-                 allgather_bucket_size=5000000000,
+                 prefetch_bucket_size=50000000,
+                 max_reuse_distance=1000000000,
+                 max_live_parameters=1000000000,
+                 param_persistence_threshold=100000,
                  dp_process_group=None,
                  reduce_scatter=True,
                  overlap_comm=False,
@@ -451,7 +458,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         if dist.get_rank() == 0:
             logger.info(f"Reduce bucket size {reduce_bucket_size}")
-            logger.info(f"Allgather bucket size {allgather_bucket_size}")
+            logger.info(f"Allgather bucket size {prefetch_bucket_size}")
         # The fused optimizer does all the work. We need this layer for two reason:
         # 1. maintain same user API from apex.fp16_utils
         # 2. keep common stuff here in case we need to add ne552w fused optimizer later
@@ -466,15 +473,20 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         self.optimizer = init_optimizer
 
         self.module = module
+
+        self.overlap_comm = overlap_comm
+        
+        fetch_stream = torch.cuda.Stream() if self.overlap_comm else None
+        self.param_coordinator = PartitionedParameterCoordinator(comm_stream=fetch_stream, 
+                                                                max_reuse_distance_in_numel=int(max_reuse_distance),
+                                                                max_available_parameters_in_numel=int(max_live_parameters))
         
         #self.param_coordinator = PartitionedParameterCoordinator(comm_stream=torch.cuda.Stream())
-        self.param_coordinator = PartitionedParameterCoordinator()
-        
         #-------------Stage 3 Setup-------------------#
         #parameters smaller than the threshold will be collectively gathered at the 
         #end of the optimizer step and will be kept till the end of the backward pass
         #TODO maybe worth just replicating these parameters and doing all reduce for them
-        self.persistence_threshold = 100000
+        self.persistence_threshold = int(param_persistence_threshold)
                 
         self.persistent_parameters = self.persistent_parameters()
         
@@ -490,7 +502,6 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         self.reduce_scatter = reduce_scatter
 
-        self.overlap_comm = overlap_comm
 
         self.dp_process_group = dp_process_group
 
@@ -534,7 +545,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         self.all_reduce_print = False
 
-        self.prefetch_elements=25000000
+        self.prefetch_elements=int(prefetch_bucket_size)
         
         # loop to deal with groups
         for i, param_group in enumerate(self.optimizer.param_groups):
@@ -586,8 +597,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         
         self.reduce_bucket_size = int(reduce_bucket_size)
-        self.allgather_bucket_size = int(allgather_bucket_size)
-
+        
         self.reduction_event = torch.cuda.Event(enable_timing=False, blocking=False)
         
         self.reduction_stream = torch.cuda.Stream() if self.overlap_comm else torch.cuda.current_stream()
@@ -651,7 +661,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         
         if dist.get_rank(group=self.dp_process_group) == 0:
-            see_memory_usage(f"After initializing ZeRO optimizer")
+            see_memory_usage(f"After initializing ZeRO optimizer", force=True)
 
     def reset_ds_tensor(self):
         for name, param in self.module.named_parameters(recurse=True):
@@ -732,18 +742,24 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         
 
     def pre_sub_module_forward_function(self, sub_module):
-        
+        see_memory_usage(f"Before sub module function {sub_module.__class__.__name__}", force=True)
+    
         self.param_coordinator.record_trace(sub_module)
         
+
         self.param_coordinator.fetch_sub_module(sub_module)
-        
+        see_memory_usage(f"Before sub module function {sub_module.__class__.__name__} after fetch", force=True)
+    
         self.param_coordinator.prefetch_next_sub_modules(sub_module, numel=self.prefetch_elements)
+        see_memory_usage(f"Before sub module function {sub_module.__class__.__name__} after prefetch", force=True)
         
         self.param_coordinator.increment_step(sub_module)
 
 
     def post_sub_module_forward_function(self, sub_module):
+        see_memory_usage(f"After sub module function {sub_module.__class__.__name__} before release", force=True)
         self.param_coordinator.release_sub_module(sub_module)
+        see_memory_usage(f"After sub module function {sub_module.__class__.__name__} after release", force=True)
     
     def pre_sub_module_backward_function(self, sub_module):
         self.param_coordinator.record_trace(sub_module)
