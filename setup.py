@@ -11,10 +11,10 @@ The wheel will be located at: dist/*.whl
 import os
 import torch
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import CUDAExtension, BuildExtension
+from torch.utils.cpp_extension import CUDAExtension, BuildExtension, CppExtension
 
 cmdclass = {}
-cmdclass['build_ext'] = BuildExtension
+cmdclass['build_ext'] = BuildExtension.with_options(use_ninja=False)
 
 TORCH_MAJOR = int(torch.__version__.split('.')[0])
 TORCH_MINOR = int(torch.__version__.split('.')[1])
@@ -114,6 +114,29 @@ ext_modules = [
                           '-D__STOCHASTIC_MODE__'
                       ]
                   }),
+    CppExtension(name='deepspeed_aio',
+                 sources=[
+                     'csrc/aio/py_lib/py_ds_aio.cpp',
+                     'csrc/aio/py_lib/deepspeed_py_aio.cpp',
+                     'csrc/aio/py_lib/deepspeed_py_aio_handle.cpp',
+                     'csrc/aio/py_lib/deepspeed_aio_thread.cpp',
+                     'csrc/aio/common/deepspeed_aio_utils.cpp',
+                     'csrc/aio/common/deepspeed_aio_common.cpp',
+                     'csrc/aio/common/deepspeed_aio_types.cpp'
+                 ],
+                 include_dirs=['csrc/aio/py_lib',
+                               'csrc/aio/common'],
+                 libraries=['aio'],
+                 extra_compile_args={
+                     'cxx': ['-g',
+                             '-Wall',
+                             '-O0',
+                             '-std=c++14',
+                             '-shared',
+                             '-fPIC']
+                 },
+                 extra_link_args=['-laio'],
+                 undef_macros=['NDEBUG']),
 ]
 
 setup(name='deepspeed',

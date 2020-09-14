@@ -1,0 +1,50 @@
+#include <condition_variable>
+#include <memory>
+#include "deepspeed_aio_thread.h"
+
+struct deepspeed_aio_handle_t {
+    std::unique_ptr<struct aio_context> _aio_ctxt;
+    const bool _single_submit;
+    const bool _overlap_events;
+    const int _num_threads;
+    deepspeed_aio_config_t _aio_config;
+
+    std::shared_ptr<struct io_op_desc_t> _scheduled_op;
+    std::vector<std::shared_ptr<struct deepspeed_aio_thread_t>> _thread_contexts;
+    std::vector<std::thread> _threads;
+
+    deepspeed_aio_handle_t(const int block_size,
+                           const int queue_depth,
+                           const bool single_submit,
+                           const bool overlap_events,
+                           const int num_threads);
+
+    ~deepspeed_aio_handle_t();
+
+    const int get_block_size() const;
+    const int get_queue_depth() const;
+    const bool get_single_submit() const;
+    const bool get_overlap_events() const;
+    const int get_thread_count() const;
+
+    int read(torch::Tensor& buffer, const char* filename, const bool validate);
+
+    int write(const torch::Tensor& buffer, const char* filename, const bool validate);
+
+    int pread(torch::Tensor& buffer, const char* filename, const bool validate, const bool async);
+
+    int pwrite(const torch::Tensor& buffer,
+               const char* filename,
+               const bool validate,
+               const bool async);
+
+    int wait(const bool validate);
+
+    void _stop_threads();
+
+    void _schedule_aio_work(std::shared_ptr<struct io_op_desc_t> scheduled_op);
+
+    void _wait_for_aio_work();
+
+    bool _is_valid_parallel_aio_op(const bool read_op, const long long int num_bytes);
+};
