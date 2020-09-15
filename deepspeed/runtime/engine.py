@@ -13,7 +13,6 @@ from torch.nn.modules import Module
 from torch.distributed.distributed_c10d import _get_global_rank
 from tensorboardX import SummaryWriter
 
-<<<<<<< HEAD:deepspeed/runtime/engine.py
 from deepspeed.runtime.zero.stage2 import FP16_DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer
@@ -32,27 +31,6 @@ from deepspeed.runtime.csr_tensor import CSRTensor
 import deepspeed.runtime.lr_schedules as lr_schedules
 from deepspeed.utils import logger, log_dist
 from deepspeed.utils.timer import ThroughputTimer, SynchronizedWallClockTimer
-=======
-from deepspeed.pt.deepspeed_timer import ThroughputTimer, SynchronizedWallClockTimer
-from deepspeed.pt.deepspeed_zero_optimizer import FP16_DeepSpeedZeroOptimizer
-from deepspeed.pt.zero_optimizer_stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
-from deepspeed.pt.deepspeed_zero_optimizer_stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
-from deepspeed.pt.deepspeed_partition_parameters import ZeroParamStatus, ZeroParamType
-from deepspeed.pt.log_utils import logger
-import deepspeed.pt.deepspeed_checkpointing as deepspeed_activation_checkpointing
-
-from deepspeed.pt.fp16_optimizer import FP16_Optimizer
-from deepspeed.pt.fp16_unfused_optimizer import FP16_UnfusedOptimizer
-from deepspeed.pt.deepspeed_fused_lamb import FusedLamb
-from deepspeed.pt.deepspeed_config import DeepSpeedConfig, \
-    ADAM_OPTIMIZER, LAMB_OPTIMIZER, DEEPSPEED_OPTIMIZERS
-
-from deepspeed.pt.deepspeed_dataloader import DeepSpeedDataLoader
-from deepspeed.pt.deepspeed_constants import \
-    ROUTE_TRAIN, ROUTE_PREDICT, ROUTE_EVAL, \
-    TORCH_DISTRIBUTED_DEFAULT_PORT, \
-    ZERO_OPTIMIZATION_OPTIMIZER_STATES, ZERO_OPTIMIZATION_GRADIENTS, ZERO_OPTIMIZATION_WEIGHTS
->>>>>>> 8aca9e8ade56a7cf913a2ec802d4dab5430cb9f5:deepspeed/pt/deepspeed_light.py
 
 from .utils import ensure_directory_exists
 
@@ -216,8 +194,6 @@ class DeepSpeedEngine(Module):
             self._config.print('DeepSpeedLight configuration')
             if self.dump_state():
                 print_configuration(self, 'DeepSpeedLight')
-
-        self.communication_enabled=True
 
     def _mpi_check(self, args, dist_init_required):
         if hasattr(args, 'deepspeed_mpi') and args.deepspeed_mpi:
@@ -530,24 +506,10 @@ class DeepSpeedEngine(Module):
         else:
             self.data_parallel_group = self.mpu.get_data_parallel_group()
             self.dp_world_size = self.mpu.get_data_parallel_world_size()
-<<<<<<< HEAD:deepspeed/runtime/engine.py
             self.mp_world_size = self.mpu.get_model_parallel_world_size()
             self.broadcast_src_rank = _get_global_rank(
                 self.mpu.get_data_parallel_group(),
                 0)
-=======
-            src_rank = _get_global_rank(self.mpu.get_data_parallel_group(), 0)
-            logger.info(f"global src_rank={src_rank}")
-
-        def is_replicated(p):
-            if hasattr(p,'ds_status') and p.ds_status is not ZeroParamStatus.AVAILABLE:
-                return False
-            return True
-
-        for p in self.module.parameters():
-            if torch.is_tensor(p) and is_replicated(p):
-                dist.broadcast(p, src_rank, group=self.data_parallel_group)
->>>>>>> 8aca9e8ade56a7cf913a2ec802d4dab5430cb9f5:deepspeed/pt/deepspeed_light.py
 
         if not self.amp_enabled():
             self._broadcast_model()
@@ -720,33 +682,6 @@ class DeepSpeedEngine(Module):
                 mpu=self.mpu,
                 postscale_gradients=self.postscale_gradients(),
                 gradient_predivide_factor=self.gradient_predivide_factor())
-<<<<<<< HEAD:deepspeed/runtime/engine.py
-=======
-        elif zero_stage == ZERO_OPTIMIZATION_WEIGHTS:
-            print("Initializing ZeRO Stage 3") if dist.get_rank() == 0 else None
-            assert self.gradient_accumulation_steps() == 1, "ZeRO stage 3 does not support gradient accumulation, if you need gradient accumulation please use stage 1"
-            optimizer = FP16_DeepSpeedZeroOptimizer_Stage3(
-                self.module,
-                optimizer,
-                timers=self.timers,
-                static_loss_scale=self.loss_scale(),
-                dynamic_loss_scale=self.dynamic_loss_scale(),
-                dynamic_loss_args=self.dynamic_loss_scale_args(),
-                clip_grad=self.gradient_clipping(),
-                contiguous_gradients=self.zero_contiguous_gradients(),
-                reduce_bucket_size=self.zero_reduce_bucket_size(),
-                prefetch_bucket_size=self.zero_prefetch_bucket_size(),
-                max_reuse_distance=self.zero_max_reuse_distance(),
-                max_live_parameters=self.zero_max_live_parameters(),
-                param_persistence_threshold=self.zero_param_persistence_threshold(),
-                dp_process_group=self.data_parallel_group,
-                reduce_scatter=self.zero_reduce_scatter(),
-                overlap_comm=self.zero_overlap_comm(),
-                mpu=self.mpu,
-                postscale_gradients=self.postscale_gradients(),
-                gradient_predivide_factor=self.gradient_predivide_factor())
->>>>>>> 8aca9e8ade56a7cf913a2ec802d4dab5430cb9f5:deepspeed/pt/deepspeed_light.py
-
 
         else:
             raise NotImplementedError("ZeRO stage {} not implemented".format(zero_stage))
@@ -929,15 +864,7 @@ class DeepSpeedEngine(Module):
             self.timers('backward_allreduce_microstep').start()
             self.timers('backward_allreduce').start()
 
-<<<<<<< HEAD:deepspeed/runtime/engine.py
-<<<<<<< HEAD:deepspeed/runtime/engine.py
         if allreduce_gradients and self.enable_backward_allreduce:
-=======
-        if allreduce_gradients and self.communication_enabled:
->>>>>>> 48c74dc... Overlap+Prefetching+persistent weights seems to be working:deepspeed/pt/deepspeed_light.py
-=======
-        if allreduce_gradients and self.communication_enabled:
->>>>>>> 8aca9e8ade56a7cf913a2ec802d4dab5430cb9f5:deepspeed/pt/deepspeed_light.py
             self.allreduce_gradients()
 
         if self.wall_clock_breakdown():

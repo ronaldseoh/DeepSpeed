@@ -42,6 +42,7 @@ LAMB = "lamb"
 TRANSFORMER = "transformer"
 SPARSE_ATTN = "sparse-attn"
 CPU_ADAM = "cpu-adam"
+AIO = "aio"
 
 # Build environment variables for custom builds
 DS_BUILD_LAMB_MASK = 1
@@ -49,9 +50,10 @@ DS_BUILD_TRANSFORMER_MASK = 10
 DS_BUILD_SPARSE_ATTN_MASK = 100
 DS_BUILD_CPU_ADAM_MASK = 1000
 DS_BUILD_AVX512_MASK = 10000
+DS_BUILD_AIO_MASK = 100000
 
 # Allow for build_cuda to turn on or off all ops
-DS_BUILD_ALL_OPS = DS_BUILD_LAMB_MASK | DS_BUILD_TRANSFORMER_MASK | DS_BUILD_SPARSE_ATTN_MASK | DS_BUILD_CPU_ADAM_MASK | DS_BUILD_AVX512_MASK
+DS_BUILD_ALL_OPS = DS_BUILD_LAMB_MASK | DS_BUILD_TRANSFORMER_MASK | DS_BUILD_SPARSE_ATTN_MASK | DS_BUILD_CPU_ADAM_MASK | DS_BUILD_AVX512_MASK | DS_BUILD_AIO_MASK
 DS_BUILD_CUDA = int(os.environ.get('DS_BUILD_CUDA', 1)) * DS_BUILD_ALL_OPS
 
 # Set default of each op based on if build_cuda is set
@@ -67,11 +69,13 @@ DS_BUILD_AVX512 = int(os.environ.get(
     'DS_BUILD_AVX512',
     cpufeature.CPUFeature['AVX512f'])) * DS_BUILD_AVX512_MASK
 
+DS_BUILD_AIO = int(os.environ.get('DS_BUILD_AIO', OP_DEFAULT)) * DS_BUILD_AIO_MASK
+
 # Final effective mask is the bitwise OR of each op
 BUILD_MASK = (DS_BUILD_LAMB | DS_BUILD_TRANSFORMER | DS_BUILD_SPARSE_ATTN
-              | DS_BUILD_CPU_ADAM)
+              | DS_BUILD_CPU_ADAM | DS_BUILD_AIO)
 
-install_ops = dict.fromkeys([LAMB, TRANSFORMER, SPARSE_ATTN, CPU_ADAM], False)
+install_ops = dict.fromkeys([LAMB, TRANSFORMER, SPARSE_ATTN, CPU_ADAM, AIO], False)
 if BUILD_MASK & DS_BUILD_LAMB:
     install_ops[LAMB] = True
 if BUILD_MASK & DS_BUILD_CPU_ADAM:
@@ -80,6 +84,9 @@ if BUILD_MASK & DS_BUILD_TRANSFORMER:
     install_ops[TRANSFORMER] = True
 if BUILD_MASK & DS_BUILD_SPARSE_ATTN:
     install_ops[SPARSE_ATTN] = True
+if BUILD_MASK & DS_BUILD_AIO:
+    install_ops[AIO] = True
+
 if len(install_ops) == 0:
     print("Building without any cuda/cpp extensions")
 print(f'BUILD_MASK={BUILD_MASK}, install_ops={install_ops}')
@@ -169,7 +176,6 @@ if BUILD_MASK & DS_BUILD_CPU_ADAM:
                               '-gencode',
                               'arch=compute_70,code=compute_70',
                               '-std=c++14',
-<<<<<<< HEAD
                               '-U__CUDA_NO_HALF_OPERATORS__',
                               '-U__CUDA_NO_HALF_CONVERSIONS__',
                               '-U__CUDA_NO_HALF2_OPERATORS__'
@@ -242,6 +248,33 @@ if BUILD_MASK & DS_BUILD_TRANSFORMER:
                           ]
                       }))
 
+# Asynchronous I/O
+if BUILD_MASK & DS_BUILD_AIO:
+    ext_modules.append(
+        CppExtension(name='deepspeed.ops.aio.aio_op',
+                     sources=[
+                         'csrc/aio/py_lib/py_ds_aio.cpp',
+                         'csrc/aio/py_lib/deepspeed_py_aio.cpp',
+                         'csrc/aio/py_lib/deepspeed_py_aio_handle.cpp',
+                         'csrc/aio/py_lib/deepspeed_aio_thread.cpp',
+                         'csrc/aio/common/deepspeed_aio_utils.cpp',
+                         'csrc/aio/common/deepspeed_aio_common.cpp',
+                         'csrc/aio/common/deepspeed_aio_types.cpp'
+                     ],
+                     include_dirs=['csrc/aio/py_lib',
+                                   'csrc/aio/common'],
+                     libraries=['aio'],
+                     extra_compile_args={
+                         'cxx': ['-g',
+                                 '-Wall',
+                                 '-O0',
+                                 '-std=c++14',
+                                 '-shared',
+                                 '-fPIC']
+                     },
+                     extra_link_args=['-laio'],
+                     undef_macros=['NDEBUG']))
+
 
 def command_exists(cmd):
     if '|' in cmd:
@@ -305,48 +338,6 @@ with open('deepspeed/git_version_info.py', 'w') as fd:
     fd.write(f"installed_ops={install_ops}\n")
 
 print(f'install_requires={install_requires}')
-=======
-                              '-g',
-                              '-Wno-reorder'],
-                      'nvcc': [
-                          '-O3',
-                          '--use_fast_math',
-                          '-gencode',
-                          'arch=compute_61,code=compute_61',
-                          '-gencode',
-                          'arch=compute_70,code=compute_70',
-                          '-std=c++14',
-                          '-U__CUDA_NO_HALF_OPERATORS__',
-                          '-U__CUDA_NO_HALF_CONVERSIONS__',
-                          '-U__CUDA_NO_HALF2_OPERATORS__',
-                          '-D__STOCHASTIC_MODE__'
-                      ]
-                  }),
-    CppExtension(name='deepspeed_aio',
-                 sources=[
-                     'csrc/aio/py_lib/py_ds_aio.cpp',
-                     'csrc/aio/py_lib/deepspeed_py_aio.cpp',
-                     'csrc/aio/py_lib/deepspeed_py_aio_handle.cpp',
-                     'csrc/aio/py_lib/deepspeed_aio_thread.cpp',
-                     'csrc/aio/common/deepspeed_aio_utils.cpp',
-                     'csrc/aio/common/deepspeed_aio_common.cpp',
-                     'csrc/aio/common/deepspeed_aio_types.cpp'
-                 ],
-                 include_dirs=['csrc/aio/py_lib',
-                               'csrc/aio/common'],
-                 libraries=['aio'],
-                 extra_compile_args={
-                     'cxx': ['-g',
-                             '-Wall',
-                             '-O0',
-                             '-std=c++14',
-                             '-shared',
-                             '-fPIC']
-                 },
-                 extra_link_args=['-laio'],
-                 undef_macros=['NDEBUG']),
-]
->>>>>>> 8aca9e8... Add Asynchronous I/O library (#72)
 
 setup(name='deepspeed',
       version=f"{VERSION}+{git_hash}",

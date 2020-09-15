@@ -540,8 +540,7 @@ def see_memory_usage(message, force=False):
         f"MA {round(torch.cuda.memory_allocated() / (1024 * 1024 * 1024),2 )} GB \
         Max_MA {round(torch.cuda.max_memory_allocated() / (1024 * 1024 * 1024),2)} GB \
         CA {round(torch.cuda.memory_cached() / (1024 * 1024 * 1024),2)} GB \
-        Max_CA {round(torch.cuda.max_memory_cached() / (1024 * 1024 * 1024))} GB"
-    )
+        Max_CA {round(torch.cuda.max_memory_cached() / (1024 * 1024 * 1024))} GB")
 
 
 def call_to_str(base, *args, **kwargs):

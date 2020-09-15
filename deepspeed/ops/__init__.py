@@ -5,3 +5,6 @@ if __installed_ops__['sparse-attn']:
     from . import sparse_attention
 if __installed_ops__['cpu-adam']:
     from . import adam
+if __installed_ops__['aio']:
+    from . import aio
+

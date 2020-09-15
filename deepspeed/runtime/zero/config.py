@@ -98,8 +98,6 @@ class DeepSpeedZeroConfig(object):
             ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE,
             ZERO_OPTIMIZATION_ALLGATHER_BUCKET_SIZE_DEFAULT)
 
-<<<<<<< HEAD:deepspeed/runtime/zero/config.py
-<<<<<<< HEAD:deepspeed/runtime/zero/config.py
         self.load_from_fp32_weights = get_scalar_param(
             zero_config_dict,
             ZERO_OPTIMIZATION_LOAD_FROM_FP32_WEIGHTS,
@@ -108,9 +106,7 @@ class DeepSpeedZeroConfig(object):
         self.cpu_offload = get_scalar_param(zero_config_dict,
                                             ZERO_OPTIMIZATION_CPU_OFFLOAD,
                                             ZERO_OPTIMIZATION_CPU_OFFLOAD_DEFAULT)
-=======
-=======
->>>>>>> 8aca9e8ade56a7cf913a2ec802d4dab5430cb9f5:deepspeed/pt/deepspeed_zero_config.py
+
         self.max_live_parameters = get_scalar_param(
             zero_config_dict,
             ZERO_OPTIMIZATION_MAX_LIVE_PARAMETERS,
@@ -130,9 +126,3 @@ class DeepSpeedZeroConfig(object):
             zero_config_dict,
             ZERO_OPTIMIZATION_PARAM_PERSISTENCE_THRESHOLD,
             ZERO_OPTIMIZATION_PARAM_PERSISTENCE_THRESHOLD_DEFAULT)
-
-
-<<<<<<< HEAD:deepspeed/runtime/zero/config.py
->>>>>>> 93b6fdd... Added DeepSpeed Linear with save_for_backward tensor_id support. Added support to change zero-3 features from json. support for using pre-allocated buffer to avoid memory fragmentation (brittle prototype).:deepspeed/pt/deepspeed_zero_config.py
-=======
->>>>>>> 8aca9e8ade56a7cf913a2ec802d4dab5430cb9f5:deepspeed/pt/deepspeed_zero_config.py

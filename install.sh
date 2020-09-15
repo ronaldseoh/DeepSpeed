@@ -219,7 +219,7 @@ else
     export PDSH_RCMD_TYPE=ssh;
     tmp_wheel_path="/tmp/deepspeed_wheels"
 
-    pdsh -w $hosts "if [ -d $tmp_wheel_path ]; then rm $tmp_wheel_path/*.whl; else mkdir -pv $tmp_wheel_path; fi"
+    pdsh -w $hosts "if [ -d $tmp_wheel_path ]; then rm $tmp_wheel_path/*; else mkdir -pv $tmp_wheel_path; fi"
     pdcp -w $hosts requirements/requirements.txt ${tmp_wheel_path}/
     if [ "$skip_requirements" == "0" ]; then
        pdsh -w $hosts "$PIP_SUDO $PIP_INSTALL -r ${tmp_wheel_path}/requirements.txt"
@@ -239,5 +239,5 @@ else
         pdsh -w $hosts "python $tmp_wheel_path/basic_install_test.py"
         echo "Installation is successful"
     fi
-    pdsh -w $hosts "if [ -d $tmp_wheel_path ]; then rm $tmp_wheel_path/*.whl $tmp_wheel_path/basic_install_test.py; rmdir $tmp_wheel_path; fi"
+    pdsh -w $hosts "if [ -d $tmp_wheel_path ]; then rm $tmp_wheel_path/* ; rmdir $tmp_wheel_path; fi"
 fi
