@@ -10,16 +10,16 @@ import math
 from torch._six import inf
 from torch.autograd import Variable
 
-from deepspeed.pt.loss_scaler import LossScaler, DynamicLossScaler
-from deepspeed.pt.deepspeed_utils import see_memory_usage, is_model_parallel_parameter
-from deepspeed.pt.deepspeed_partition_parameters import ZeroParamStatus, ZeroParamType
+from deepspeed.runtime.fp16.loss_scaler import LossScaler, DynamicLossScaler
+from deepspeed.runtime.utils import see_memory_usage, is_model_parallel_parameter
+from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus, ZeroParamType
 
 import itertools
 #Toggle this to true to enable correctness test
 #with gradient partitioning and without
 pg_correctness_test = False
 
-from deepspeed.pt.log_utils import logger
+from deepspeed.utils.logging import logger
 
 try:
     from apex_C import flatten
@@ -1766,8 +1766,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         state_dict['dynamic_loss_scale'] = self.dynamic_loss_scale
         state_dict['overflow'] = self.overflow
         state_dict['optimizer_state_dict'] = self.optimizer.state_dict()
-        state_dict[
-            'single_partition_of_fp32_groups'] = self.single_partition_of_fp32_groups
+        #        state_dict[
+        #            'single_partition_of_fp32_groups'] = self.single_partition_of_fp32_groups
 
         state_dict['partition_count'] = self.partition_count
 

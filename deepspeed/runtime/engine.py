@@ -15,6 +15,7 @@ from tensorboardX import SummaryWriter
 
 from deepspeed.runtime.zero.stage2 import FP16_DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
+from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer
 from deepspeed.runtime.activation_checkpointing import checkpointing as activation_checkpointing
 from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
@@ -26,7 +27,7 @@ from deepspeed.runtime.constants import \
     ROUTE_TRAIN, ROUTE_PREDICT, ROUTE_EVAL, \
     TORCH_DISTRIBUTED_DEFAULT_PORT
 from deepspeed.runtime.zero.constants import \
-    ZERO_OPTIMIZATION_OPTIMIZER_STATES, ZERO_OPTIMIZATION_GRADIENTS
+    ZERO_OPTIMIZATION_OPTIMIZER_STATES, ZERO_OPTIMIZATION_GRADIENTS, ZERO_OPTIMIZATION_WEIGHTS
 from deepspeed.runtime.csr_tensor import CSRTensor
 import deepspeed.runtime.lr_schedules as lr_schedules
 from deepspeed.utils import logger, log_dist

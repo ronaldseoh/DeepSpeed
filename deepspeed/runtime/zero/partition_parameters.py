@@ -2,7 +2,7 @@ import os
 import torch
 from enum import Enum
 import itertools
-from deepspeed.pt.deepspeed_linear import LinearModuleForZeroStage3, LinearFunctionForZeroStage3
+from deepspeed.runtime.zero.linear import LinearModuleForZeroStage3, LinearFunctionForZeroStage3
 
 
 def print_rank_0(message, debug=True, force=False):

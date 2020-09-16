@@ -15,6 +15,8 @@ from .runtime.activation_checkpointing import checkpointing
 from .ops.transformer import DeepSpeedTransformerLayer, DeepSpeedTransformerConfig
 from .utils import log_dist
 
+from .runtime.zero.partition_parameters import ScatteredParameters
+
 from .pipe import PipelineModule
 
 try:

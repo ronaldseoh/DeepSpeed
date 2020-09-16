@@ -46,7 +46,7 @@ except ImportError:
     warnings.warn('deepspeed sparse attention is NOT installed.')
 
 try:
-    importlib.import_module('deepspeed.ops.aio.aio_op')
+    importlib.import_module('deepspeed.ops.aio')
     print('deepspeed asynchronous i/o kernels successfully installed.')
 except Exception as err:
     warnings.warn('deepspeed asynchronous i/o kernels are NOT installed.')

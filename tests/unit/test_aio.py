@@ -2,7 +2,7 @@ import pytest
 import os
 import filecmp
 import torch
-from deepspeed_aio import aio_handle
+from deepspeed.ops.aio import aio_handle
 
 MEGA_BYTE = 1024**2
 BLOCK_SIZE = MEGA_BYTE
