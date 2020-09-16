@@ -248,7 +248,7 @@ def is_model_parallel_parameter(p):
     return hasattr(p, 'model_parallel') and p.model_parallel
 
 
-def see_memory_usage(message, force=False):
+def see_memory_usage(message, force=True):
     if not force:
         return
     if torch.distributed.is_initialized() and not torch.distributed.get_rank() == 0:

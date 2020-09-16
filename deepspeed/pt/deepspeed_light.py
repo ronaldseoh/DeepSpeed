@@ -372,9 +372,11 @@ class DeepSpeedLight(Module):
                 f'DeepSpeed using configured LR scheduler = {self.scheduler_name()}')
             self.lr_scheduler = lr_scheduler
         else:
-            logger.warning('DeepSpeed using client LR scheduler')
+            if dist.get_rank() == 0:
+                logger.warning('DeepSpeed using client LR scheduler')
             self.lr_scheduler = client_lr_scheduler
-        logger.info(f'DeepSpeed LR Scheduler = {self.lr_scheduler}')
+        if dist.get_rank() == 0:
+            logger.info(f'DeepSpeed LR Scheduler = {self.lr_scheduler}')
 
     def _configure_checkpointing(self, dist_init_required):
 

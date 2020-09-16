@@ -3,7 +3,7 @@ import torch
 from enum import Enum
 import itertools
 from deepspeed.pt.deepspeed_linear import LinearModuleForZeroStage3, LinearFunctionForZeroStage3
-
+from deepspeed.pt.deepspeed_utils import see_memory_usage
 def print_rank_0(message, debug=True, force=False):
     if torch.distributed.get_rank() == 0 and (debug or force):
         print(message)
@@ -160,13 +160,15 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         
 
     def _post_init_method(self, module):
+        #see_memory_usage(f"Before converting parmas in {module.__class__.__name__}", force=True)
         print_rank_0(f'Converting Params in {module.__class__.__name__}', force=True )
+
         for name, param in module.named_parameters(recurse=False):
             if not hasattr(param,'ds_id'):
                 self._convert_to_deepspeed_param(param)
                 print_rank_0(f"Partitioning param with ds id {param.ds_id} and shape {param.data.shape}")
                 param.partition()
-
+        #see_memory_usage(f"After converting and partitioning parmas in {module.__class__.__name__}", force=True)
 
     def _convert_to_deepspeed_param(self, param):
         
@@ -268,10 +270,11 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
     def _partition_param(self, param):
         assert param.ds_status is not ZeroParamStatus.INFLIGHT, f" {param} Cannot parititon a param in flight"
+        global reuse_buffers
         #print_rank_0(f"Param id {param.ds_id} status is {param.ds_status}")
         if param.ds_status is ZeroParamStatus.AVAILABLE:
-            
-            if reuse_buffers and param.ds_numel == 16384 * 16384 * 4 or param.ds_numel == 16384 * 16384:
+            print_rank_0(f"reuse buffers {reuse_buffers}",force=True)
+            if reuse_buffers and (param.ds_numel == 16384 * 16384 * 4 or param.ds_numel == 16384 * 16384):
                 buffer = param.data
                 print_rank_0("Returning buffer for param {param.ds_id} with numel {param.ds_numel} to empty buffers", force=True)
                 empty_buffers[id(buffer)] = buffer
@@ -477,6 +480,8 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #import pdb;pdb.set_trace()
         #param.grad=None
         #param.grad.test()
+        print_rank_0(f"Partitioning gradient of size {param.grad.numel()}")
+        see_memory_usage("Before partitioning gradients",force=True)
         partition_size = param.ds_tensor.numel()
         
         if partition_buffer is None:
@@ -493,4 +498,5 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             partition_buffer.view(-1).narrow(0, 0, elements).copy_(param.grad.view(-1).narrow(0, start, elements))
         #print("after partition gradients")
         param.grad.data=partition_buffer.data
+        see_memory_usage("After partitioning gradients", force=True)
     
