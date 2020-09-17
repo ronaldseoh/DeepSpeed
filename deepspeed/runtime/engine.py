@@ -16,6 +16,7 @@ from tensorboardX import SummaryWriter
 from deepspeed.runtime.zero.stage2 import FP16_DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
 from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
+from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer
 from deepspeed.runtime.activation_checkpointing import checkpointing as activation_checkpointing
 from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
@@ -126,6 +127,7 @@ class DeepSpeedEngine(Module):
         self.loaded_checkpoint_mp_world_size = None
         self.loaded_checkpoint_dp_world_size = None
         self.enable_backward_allreduce = True
+        self.communication_enabled = True
 
         if dist_init_required is None:
             dist_init_required = not dist.is_initialized()
@@ -487,8 +489,13 @@ class DeepSpeedEngine(Module):
                 'DeepSpeed {} optimizer requires dynamic loss scaling'.format(self.optimizer_name())
 
     def _broadcast_model(self):
+        def is_replicated(p):
+            if hasattr(p, 'ds_status') and p.ds_status is not ZeroParamStatus.AVAILABLE:
+                return False
+            return True
+
         for p in self.module.parameters():
-            if torch.is_tensor(p):
+            if torch.is_tensor(p) and is_replicated(p):
                 dist.broadcast(p,
                                self.broadcast_src_rank,
                                group=self.data_parallel_group)
@@ -865,7 +872,8 @@ class DeepSpeedEngine(Module):
             self.timers('backward_allreduce_microstep').start()
             self.timers('backward_allreduce').start()
 
-        if allreduce_gradients and self.enable_backward_allreduce:
+        if allreduce_gradients and (self.enable_backward_allreduce
+                                    or self.communication_enabled):
             self.allreduce_gradients()
 
         if self.wall_clock_breakdown():

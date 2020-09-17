@@ -829,7 +829,13 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         self.param_coordinator.increment_step(sub_module)
 
     def post_sub_module_backward_function(self, sub_module):
+        see_memory_usage(
+            f"After sub module backward function {sub_module.__class__.__name__} before release",
+            force=True)
         self.param_coordinator.release_sub_module(sub_module)
+        see_memory_usage(
+            f"After sub module backward function {sub_module.__class__.__name__} after release",
+            force=True)
 
     def _release_ipg_buffers(self):
         if self.contiguous_gradients:
@@ -1693,6 +1699,10 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         2. scaled_loss = fp32_loss*loss_scale
         3. scaled_loss.backward(), which accumulates scaled gradients into the ``.grad`` attributes of the model's fp16 leaves
         """
+        print_rank_0(
+            f"Total fully available parameters {self.param_coordinator.total_available_parameter_numel}"
+        )
+        see_memory_usage(f"Before backward")
         if self.contiguous_gradients:
             self.ipg_buffer = []
             buf_0 = torch.empty(self.reduce_bucket_size,

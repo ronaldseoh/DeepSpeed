@@ -485,8 +485,19 @@ class CheckpointFunction(torch.autograd.Function):
             torch.cuda.synchronize()
 
         # Tensors returned from forward() may not be differentiable, e.g., attention mask
-        non_grad_outputs = [o for o in outputs if not o.is_floating_point()]
+        if isinstance(outputs, torch.Tensor):
+            non_grad_outputs = [outputs] if not outputs.is_floating_point() else []
+        else:
+            non_grad_outputs = [o for o in outputs if not o.is_floating_point()]
         ctx.mark_non_differentiable(*non_grad_outputs)
+
+        #        print(f'forward-checkpointing: outputs: type = {type(outputs)} len={len(outputs)} values = {outputs}')
+        #        print(f'forward-checkpointing: inputs: type = {type(inputs)} len={len(inputs)} values = {inputs}')
+        #        print(f'forward-checkpointing: args: type = {type(args)} len={len(args)} values = {args}')
+        #        print(f'forward-checkpointing: non_grad_outputs: len={len(non_grad_outputs)} values = {non_grad_outputs}')
+        #        print(
+        #            f'forward-checkpointing: ctx.needs_input_grad: len={len(ctx.needs_input_grad)} values = {ctx.needs_input_grad}')
+
         return outputs
 
     @staticmethod
@@ -550,6 +561,7 @@ class CheckpointFunction(torch.autograd.Function):
         with torch.enable_grad():
             outputs = ctx.run_function(*detached_inputs)
 
+        see_memory_usage("In backward checkpointing code after forward", force=True)
         # Set the states back to what it was at the start of this function.
         torch.set_rng_state(bwd_cpu_rng_state)
         _set_cuda_rng_state(bwd_cuda_rng_state)
@@ -563,14 +575,19 @@ class CheckpointFunction(torch.autograd.Function):
         # adjust the arguments to autograd.backward() too. This happens when forward()
         # returns indices or a mask (such as an attention mask).
         # We skip the first needs_input_grad because it corresponds to run_function.
-        output_tensors = []
-        grad_tensors = []
-        for idx, need_grad in enumerate(ctx.needs_input_grad[1:]):
-            if need_grad:
-                output_tensors.append(outputs[idx])
-                grad_tensors.append(args[idx])
 
-        torch.autograd.backward(output_tensors, grad_tensors)
+
+#        output_tensors = []
+#        grad_tensors = []
+#        print(f'ctx.needs_input_grad: len={len(ctx.needs_input_grad)}, value={ctx.needs_input_grad}')
+#        print(f'outputs: len={len(outputs)}, value={outputs}')
+#        print(f'args: len={len(args)}, value={args}')
+#        for idx, need_grad in enumerate(ctx.needs_input_grad[1:]):
+#            if need_grad:
+#                output_tensors.append(outputs[idx])
+#                grad_tensors.append(args[idx])
+#
+#        torch.autograd.backward(output_tensors, grad_tensors)
 
         see_memory_usage("In backward checkpointing code before backward", force=True)
 

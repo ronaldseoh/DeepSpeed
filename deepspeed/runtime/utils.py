@@ -528,7 +528,7 @@ def memory_status(msg, print_rank=-1, reset_max=False):
     )
 
 
-def see_memory_usage(message, force=False):
+def see_memory_usage(message, force=True):
     if not force:
         return
     if torch.distributed.is_initialized() and not torch.distributed.get_rank() == 0:

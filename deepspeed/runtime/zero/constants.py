@@ -13,6 +13,8 @@ ZeRO optimization should be enabled as:
 "session_params": {
   "zero_optimization": {
     "stage": [0|1|2],
+    "stage3_max_live_parameters" : 1000000000,
+    "stage3_max_reuse_distance" : 1000000000,
     "allgather_partitions": [true|false],
     "allgather_bucket_size": 500000000,
     "reduce_scatter": [true|false],
