@@ -2,7 +2,12 @@ import pytest
 import os
 import filecmp
 import torch
-from deepspeed.ops.aio import aio_handle
+
+try:
+    from deepspeed.ops.aio import aio_handle
+except ImportError:
+    print('DeepSpeed AIO library is not installed, will skip unit tetts')
+    aio_handle = None
 
 MEGA_BYTE = 1024**2
 BLOCK_SIZE = MEGA_BYTE
@@ -10,6 +15,13 @@ QUEUE_DEPTH = 2
 IO_SIZE = 16 * MEGA_BYTE
 IO_PARALLEL = 2
 AIO_VALIDATE = False
+
+
+def _skip_on_aio_availability():
+    try:
+        from deepspeed.ops.aio import aio_handle
+    except ImportError:
+        pytest.skip('Skip these tests until libaio-dev is installed in our docker image')
 
 
 @pytest.mark.parametrize('single_submit, overlap_events',
@@ -22,6 +34,7 @@ AIO_VALIDATE = False
                           (True,
                            True)])
 def test_parallel_read(tmpdir, single_submit, overlap_events):
+    _skip_on_aio_availability()
     test_file = os.path.join(tmpdir, '_aio_random.pt')
     with open(test_file, 'wb') as f:
         f.write(os.urandom(IO_SIZE))
@@ -48,6 +61,7 @@ def test_parallel_read(tmpdir, single_submit, overlap_events):
                           (True,
                            True)])
 def test_async_read(tmpdir, single_submit, overlap_events):
+    _skip_on_aio_availability()
     test_file = os.path.join(tmpdir, '_aio_random.pt')
     with open(test_file, 'wb') as f:
         f.write(os.urandom(IO_SIZE))
@@ -77,7 +91,7 @@ def test_async_read(tmpdir, single_submit, overlap_events):
                           (True,
                            True)])
 def test_parallel_write(tmpdir, single_submit, overlap_events):
-
+    _skip_on_aio_availability()
     ref_file = os.path.join(tmpdir, '_py_write_random.pt')
     ref_buffer = os.urandom(IO_SIZE)
     with open(ref_file, 'wb') as f:
@@ -107,7 +121,7 @@ def test_parallel_write(tmpdir, single_submit, overlap_events):
                           (True,
                            True)])
 def test_async_write(tmpdir, single_submit, overlap_events):
-
+    _skip_on_aio_availability()
     ref_file = os.path.join(tmpdir, '_py_write_random.pt')
     ref_buffer = os.urandom(IO_SIZE)
     with open(ref_file, 'wb') as f:
