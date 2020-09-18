@@ -137,6 +137,7 @@ def libraries_installed(libraries):
         valid = valid or check_result.returncode == 0
     return valid
 
+
 ## Lamb ##
 if BUILD_MASK & DS_BUILD_LAMB:
     ext_modules.append(
@@ -263,31 +264,33 @@ if BUILD_MASK & DS_BUILD_AIO:
     if libraries_installed(aio_libraries):
         ext_modules.append(
             CppExtension(name='deepspeed.ops.aio.aio_op',
-                        sources=[
-                            'csrc/aio/py_lib/py_ds_aio.cpp',
-                            'csrc/aio/py_lib/deepspeed_py_aio.cpp',
-                            'csrc/aio/py_lib/deepspeed_py_aio_handle.cpp',
-                            'csrc/aio/py_lib/deepspeed_aio_thread.cpp',
-                            'csrc/aio/common/deepspeed_aio_utils.cpp',
-                            'csrc/aio/common/deepspeed_aio_common.cpp',
-                            'csrc/aio/common/deepspeed_aio_types.cpp'
-                        ],
-                        include_dirs=['csrc/aio/py_lib',
-                                    'csrc/aio/common'],
-                        libraries=['aio'],
-                        extra_compile_args={
-                            'cxx': ['-g',
-                                    '-Wall',
-                                    '-O0',
-                                    '-std=c++14',
-                                    '-shared',
-                                    '-fPIC']
-                        },
-                        extra_link_args=['-laio'],
-                        undef_macros=['NDEBUG']))
+                         sources=[
+                             'csrc/aio/py_lib/py_ds_aio.cpp',
+                             'csrc/aio/py_lib/deepspeed_py_aio.cpp',
+                             'csrc/aio/py_lib/deepspeed_py_aio_handle.cpp',
+                             'csrc/aio/py_lib/deepspeed_aio_thread.cpp',
+                             'csrc/aio/common/deepspeed_aio_utils.cpp',
+                             'csrc/aio/common/deepspeed_aio_common.cpp',
+                             'csrc/aio/common/deepspeed_aio_types.cpp'
+                         ],
+                         include_dirs=['csrc/aio/py_lib',
+                                       'csrc/aio/common'],
+                         libraries=['aio'],
+                         extra_compile_args={
+                             'cxx':
+                             ['-g',
+                              '-Wall',
+                              '-O0',
+                              '-std=c++14',
+                              '-shared',
+                              '-fPIC']
+                         },
+                         extra_link_args=['-laio'],
+                         undef_macros=['NDEBUG']))
     else:
         warnings.warn(
-            f'Skip build/install asynchronous i/o kernels: because of missing dependency libraries {aio_libraries}')
+            f'Skip build/install asynchronous i/o kernels: because of missing dependency libraries {aio_libraries}'
+        )
         install_ops[AIO] = False
 
 
