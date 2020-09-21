@@ -20,7 +20,7 @@ copyright = '2020, Microsoft'
 author = 'Microsoft'
 
 # The full version, including alpha/beta/rc tags
-release = '0.1.0'
+release = '0.3.0'
 
 master_doc = 'index'
 
@@ -34,6 +34,7 @@ autodoc_member_order = 'bysource'
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
+    'sphinx.ext.viewcode',
     'recommonmark',
     'sphinx_rtd_theme',
 ]
@@ -78,11 +79,4 @@ add_module_names = True
 
 autoclass_content = 'both'
 
-autodoc_mock_imports = [
-    "torch",
-    "apex",
-    "mpi4py",
-    "tensorboardX",
-    "deepspeed_transformer_cuda",
-    "deepspeed_stochastic_transformer_cuda",
-]
+autodoc_mock_imports = ["torch", "apex", "mpi4py", "tensorboardX", "numpy"]

@@ -484,24 +484,17 @@ class CheckpointFunction(torch.autograd.Function):
         if SYNCHRONIZE:
             torch.cuda.synchronize()
 
-        # Tensors returned from forward() may not be differentiable, e.g., attention mask
-        if isinstance(outputs, torch.Tensor):
+        # Tensors returned from forward() may not be differentiable.
+        if torch.is_tensor(outputs):
             non_grad_outputs = [outputs] if not outputs.is_floating_point() else []
         else:
             non_grad_outputs = [o for o in outputs if not o.is_floating_point()]
         ctx.mark_non_differentiable(*non_grad_outputs)
 
-        #        print(f'forward-checkpointing: outputs: type = {type(outputs)} len={len(outputs)} values = {outputs}')
-        #        print(f'forward-checkpointing: inputs: type = {type(inputs)} len={len(inputs)} values = {inputs}')
-        #        print(f'forward-checkpointing: args: type = {type(args)} len={len(args)} values = {args}')
-        #        print(f'forward-checkpointing: non_grad_outputs: len={len(non_grad_outputs)} values = {non_grad_outputs}')
-        #        print(
-        #            f'forward-checkpointing: ctx.needs_input_grad: len={len(ctx.needs_input_grad)} values = {ctx.needs_input_grad}')
-
         return outputs
 
     @staticmethod
-    def backward(ctx, *args):
+    def backward(ctx, *grads):
         global timers
         see_memory_usage("In backward", force=True)
         # removing pointers to the contiguous buffer memory
@@ -570,28 +563,20 @@ class CheckpointFunction(torch.autograd.Function):
         if isinstance(outputs, torch.Tensor):
             outputs = (outputs, )
 
-        # Go over args and build the list of gradient tensors. This is usually just args,
-        # but if the forward pass returns tensors that do not require_grad then we should
-        # adjust the arguments to autograd.backward() too. This happens when forward()
-        # returns indices or a mask (such as an attention mask).
-        # We skip the first needs_input_grad because it corresponds to run_function.
-
-
-#        output_tensors = []
-#        grad_tensors = []
-#        print(f'ctx.needs_input_grad: len={len(ctx.needs_input_grad)}, value={ctx.needs_input_grad}')
-#        print(f'outputs: len={len(outputs)}, value={outputs}')
-#        print(f'args: len={len(args)}, value={args}')
-#        for idx, need_grad in enumerate(ctx.needs_input_grad[1:]):
-#            if need_grad:
-#                output_tensors.append(outputs[idx])
-#                grad_tensors.append(args[idx])
-#
-#        torch.autograd.backward(output_tensors, grad_tensors)
+        # Construct arguments to autograd.backward().
+        # This is usually just outputs and grads, but forward() can return tensors that
+        # are not differentiable.
+        output_tensors = []
+        grad_tensors = []
+        for out, grad in zip(outputs, grads):
+            if out.requires_grad:
+                output_tensors.append(out)
+                grad_tensors.append(grad)
 
         see_memory_usage("In backward checkpointing code before backward", force=True)
 
-        torch.autograd.backward(outputs, args)
+        torch.autograd.backward(output_tensors, grad_tensors)
+
         see_memory_usage("After backward checkpointing code before backward", force=True)
 
         if PROFILE_TIME:
