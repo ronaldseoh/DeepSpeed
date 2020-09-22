@@ -4,7 +4,9 @@ import argparse
 import time
 import sys
 from multiprocessing import Pool
-from deepspeed_aio import deepspeed_aio_read, deepspeed_aio_write, aio_handle
+from deepspeed.ops.aio import aio_read, aio_write, aio_handle
+from ds_aio_basic import aio_basic_multiprocessing
+from ds_aio_handle import aio_handle_multiprocessing
 
 GB_DIVISOR = 1024**3
 
@@ -87,192 +89,6 @@ def validate_args(args):
     return True
 
 
-def do_read(pool_params):
-    args, tid = pool_params
-    num_bytes = os.path.getsize(args.read_file)
-    print(f'tid {tid}: Allocating read tensor of size {num_bytes} bytes')
-    dst_buffer = torch.empty(num_bytes, dtype=torch.uint8, device='cpu').pin_memory()
-    print(
-        f'tid {tid}: Reading file {args.read_file} of size {num_bytes} bytes into buffer on device {dst_buffer.device}'
-    )
-    elapsed_sec = 0
-    for _ in range(args.loops):
-        start_time = time.time()
-        deepspeed_aio_read(dst_buffer,
-                           args.read_file,
-                           args.block_size,
-                           args.queue_depth,
-                           args.single_submit,
-                           args.overlap_events,
-                           args.validate)
-        end_time = time.time()
-        elapsed_sec += end_time - start_time
-    print(f'tid {tid}:  read_time(usec) = {elapsed_sec*1e6}')
-    return elapsed_sec, num_bytes
-
-
-def do_write(pool_params):
-    args, tid = pool_params
-    write_file = f'{args.write_file}.{tid}'
-    fp32_bytes = torch.tensor([]).element_size()
-    fp32_size = args.write_size // fp32_bytes
-    print(f'tid {tid}: Allocating write tensor of size {args.write_size} bytes')
-    write_tensor = torch.randn(fp32_size, dtype=torch.float32, device='cpu').pin_memory()
-    tensor_bytes = write_tensor.element_size() * write_tensor.numel()
-    print(
-        f'tid {tid}:  Writing file {write_file} of size {tensor_bytes} bytes from buffer on device {write_tensor.device}'
-    )
-    elapsed_sec = 0
-    for _ in range(args.loops):
-        start_time = time.time()
-        deepspeed_aio_write(write_tensor,
-                            write_file,
-                            args.block_size,
-                            args.queue_depth,
-                            args.single_submit,
-                            args.overlap_events,
-                            args.validate)
-        end_time = time.time()
-        elapsed_sec += end_time - start_time
-    print(f'tid {tid}: write_time(usec) = {elapsed_sec*1e6}')
-    return elapsed_sec, tensor_bytes
-
-
-def do_handle_read(pool_params):
-    args, tid = pool_params
-    num_bytes = os.path.getsize(args.read_file)
-    print(f'tid {tid}: Allocating read tensor of size {num_bytes} bytes')
-    dst_buffer = torch.empty(num_bytes, dtype=torch.uint8, device='cpu').pin_memory()
-    print(
-        f'tid {tid}: Reading file {args.read_file} of size {num_bytes} bytes into buffer on device {dst_buffer.device}'
-    )
-    ds_aio_handle = aio_handle(args.block_size,
-                               args.queue_depth,
-                               args.single_submit,
-                               args.overlap_events,
-                               1)
-    print(f'tid {tid}: created deepspeed aio handle')
-    elapsed_sec = 0
-    for _ in range(args.loops):
-        start_time = time.time()
-        ret = ds_aio_handle.read(dst_buffer, args.read_file, args.validate)
-        assert ret != -1
-        end_time = time.time()
-        elapsed_sec += end_time - start_time
-
-    ds_aio_handle.fini()
-    print(f'tid {tid}:  read_time(usec) = {elapsed_sec*1e6}')
-    return elapsed_sec, num_bytes
-
-
-def do_parallel_read(pool_params):
-    args, tid = pool_params
-    num_bytes = os.path.getsize(args.read_file)
-    print(f'tid {tid}: Allocating read tensor of size {num_bytes} bytes')
-    dst_buffer = torch.empty(num_bytes, dtype=torch.uint8, device='cpu').pin_memory()
-    print(
-        f'tid {tid}: Reading file {args.read_file} of size {num_bytes} bytes into buffer on device {dst_buffer.device}'
-    )
-    ds_aio_handle = aio_handle(args.block_size,
-                               args.queue_depth,
-                               args.single_submit,
-                               args.overlap_events,
-                               args.io_parallel)
-    print(f'tid {tid}: created deepspeed aio handle')
-    elapsed_sec = 0
-    for _ in range(args.loops):
-        start_time = time.time()
-        ret = ds_aio_handle.pread(dst_buffer, args.read_file, args.validate, True)
-        assert ret != -1
-        ds_aio_handle.wait(args.validate)
-        end_time = time.time()
-        elapsed_sec += end_time - start_time
-
-    ds_aio_handle.fini()
-    print(f'tid {tid}:  read_time(usec) = {elapsed_sec*1e6}')
-    return elapsed_sec, num_bytes
-
-
-def do_handle_write(pool_params):
-    args, tid = pool_params
-    write_file = f'{args.write_file}.{tid}'
-    print(f'tid {tid}: Allocating write tensor of size {args.write_size} bytes')
-    write_tensor = torch.empty(args.write_size,
-                               dtype=torch.uint8,
-                               device='cpu').pin_memory()
-    print(
-        f'tid {tid}:  Writing file {write_file} of size {args.write_size} bytes from buffer on device {write_tensor.device}'
-    )
-
-    ds_aio_handle = aio_handle(args.block_size,
-                               args.queue_depth,
-                               args.single_submit,
-                               args.overlap_events,
-                               1)
-    print(f'tid {tid}: created deepspeed aio handle')
-
-    elapsed_sec = 0
-    for _ in range(args.loops):
-        start_time = time.time()
-        ret = ds_aio_handle.write(write_tensor, write_file, args.validate)
-        assert ret != -1
-        end_time = time.time()
-        elapsed_sec += end_time - start_time
-
-    ds_aio_handle.fini()
-    print(f'tid {tid}: write_time(usec) = {elapsed_sec*1e6}')
-    return elapsed_sec, args.write_size
-
-
-def do_parallel_write(pool_params):
-    args, tid = pool_params
-    write_file = f'{args.write_file}.{tid}'
-    print(f'tid {tid}: Allocating write tensor of size {args.write_size} bytes')
-    write_tensor = torch.empty(args.write_size,
-                               dtype=torch.uint8,
-                               device='cpu').pin_memory()
-    print(
-        f'tid {tid}:  Writing file {write_file} of size {args.write_size} bytes from buffer on device {write_tensor.device}'
-    )
-
-    ds_aio_handle = aio_handle(args.block_size,
-                               args.queue_depth,
-                               args.single_submit,
-                               args.overlap_events,
-                               args.io_parallel)
-    print(f'tid {tid}: created deepspeed aio handle')
-
-    elapsed_sec = 0
-    for _ in range(args.loops):
-        start_time = time.time()
-        ret = ds_aio_handle.pwrite(write_tensor, write_file, args.validate, True)
-        assert ret != -1
-        ds_aio_handle.wait(args.validate)
-        end_time = time.time()
-        elapsed_sec += end_time - start_time
-
-    ds_aio_handle.fini()
-    print(f'tid {tid}: write_time(usec) = {elapsed_sec*1e6}')
-    return elapsed_sec, args.write_size
-
-
-def do_parallel_io(args, io_function, io_string):
-    POOL_SIZE = args.threads
-    pool_params = [(args, p) for p in range(POOL_SIZE)]
-
-    with Pool(POOL_SIZE) as p:
-        io_perf_results = p.map(io_function, pool_params)
-
-    if None in io_perf_results:
-        print(f"Failure in one of {POOL_SIZE} {io_string} processes")
-        return
-
-    max_latency_sec = max([sec for sec, _ in io_perf_results])
-    total_bytes = sum([num_bytes for _, num_bytes in io_perf_results])
-    io_speed_GB = args.loops * total_bytes / max_latency_sec / GB_DIVISOR
-    print(f'Total {io_string} Speed = {io_speed_GB} GB/sec')
-
-
 def main():
     print(f'Testing deepspeed_aio python frontend')
 
@@ -281,25 +97,12 @@ def main():
     if not validate_args(args):
         quit()
 
+    multiprocess_function = aio_handle_multiprocessing if args.handle else aio_basic_multiprocessing
     if args.read_file:
-        if args.handle:
-            if args.io_parallel:
-                read_function = do_parallel_read
-            else:
-                read_function = do_handle_read
-        else:
-            read_function = do_read
-        do_parallel_io(args, read_function, "Read")
+        multiprocess_function(args, True)
 
     if args.write_file:
-        if args.handle:
-            if args.io_parallel:
-                write_function = do_parallel_write
-            else:
-                write_function = do_handle_write
-        else:
-            write_function = do_write
-        do_parallel_io(args, write_function, 'Write')
+        multiprocess_function(args, False)
 
 
 if __name__ == "__main__":

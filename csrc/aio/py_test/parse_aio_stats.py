@@ -8,6 +8,9 @@ SUBMIT_LATENCY = 'submit_latency'
 COMPLETE_LATENCY = 'complete_latency'
 READ_SPEED = 'read_speed'
 WRITE_SPEED = 'write_speed'
+
+TASK_READ_SPEED = 'task_read_speed'
+
 PERF_METRICS = [
     RAW_RATE,
     E2E_RATE,
@@ -21,8 +24,8 @@ METRIC_SEARCH = {
     E2E_RATE: 'ds_time',
     SUBMIT_LATENCY: 'aggr: submit',
     COMPLETE_LATENCY: 'aggr: complete',
-    READ_SPEED: 'Total Read Speed',
-    WRITE_SPEED: 'Total Write Speed'
+    READ_SPEED: 'E2E Read Speed',
+    WRITE_SPEED: 'E2E Write Speed'
 }
 
 NUM_BYTES = (400 * 1024 * 1024)
@@ -76,7 +79,7 @@ def extract_value(key, file):
 
 
 def get_file_key(file):
-    f, _ = os.path.splitext(file)
+    f, _ = os.path.splitext(os.path.basename(file))
     fields = f.split('_')
     values = [extract_value(k, file) for k in fields]
     return tuple(values)

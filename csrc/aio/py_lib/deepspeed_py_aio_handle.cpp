@@ -240,3 +240,23 @@ int deepspeed_aio_handle_t::pwrite(const torch::Tensor& buffer,
 
     return wait(validate);
 }
+
+int deepspeed_aio_handle_t::sync_pread(torch::Tensor& buffer, const char* filename)
+{
+    return pread(buffer, filename, false, false);
+}
+
+int deepspeed_aio_handle_t::sync_pwrite(const torch::Tensor& buffer, const char* filename)
+{
+    return pwrite(buffer, filename, false, false);
+}
+
+int deepspeed_aio_handle_t::async_pread(torch::Tensor& buffer, const char* filename)
+{
+    return pread(buffer, filename, false, true);
+}
+
+int deepspeed_aio_handle_t::async_pwrite(const torch::Tensor& buffer, const char* filename)
+{
+    return pwrite(buffer, filename, false, true);
+}

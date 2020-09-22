@@ -17,11 +17,35 @@ IO_PARALLEL = 2
 AIO_VALIDATE = False
 
 
-def _skip_on_aio_availability():
+def _skip_if_no_aio():
     try:
         from deepspeed.ops.aio import aio_handle
     except ImportError:
         pytest.skip('Skip these tests until libaio-dev is installed in our docker image')
+
+
+def _do_ref_write(tmpdir):
+    ref_file = os.path.join(tmpdir, '_py_random.pt')
+    ref_buffer = os.urandom(IO_SIZE)
+    with open(ref_file, 'wb') as f:
+        f.write(ref_buffer)
+
+    return ref_file, ref_buffer
+
+
+def _get_test_file_and_buffer(tmpdir, ref_buffer):
+    test_file = os.path.join(tmpdir, '_aio_write_random.pt')
+    test_buffer = torch.ByteTensor(list(ref_buffer)).pin_memory()
+
+    return test_file, test_buffer
+
+
+def _validate_handle_state(handle, single_submit, overlap_events):
+    assert handle.get_single_submit() == single_submit
+    assert handle.get_overlap_events() == overlap_events
+    assert handle.get_thread_count() == IO_PARALLEL
+    assert handle.get_block_size() == BLOCK_SIZE
+    assert handle.get_queue_depth() == QUEUE_DEPTH
 
 
 @pytest.mark.parametrize('single_submit, overlap_events',
@@ -34,20 +58,19 @@ def _skip_on_aio_availability():
                           (True,
                            True)])
 def test_parallel_read(tmpdir, single_submit, overlap_events):
-    _skip_on_aio_availability()
-    test_file = os.path.join(tmpdir, '_aio_random.pt')
-    with open(test_file, 'wb') as f:
-        f.write(os.urandom(IO_SIZE))
+    _skip_if_no_aio()
+
+    ref_file, _ = _do_ref_write(tmpdir)
 
     aio_buffer = torch.empty(IO_SIZE, dtype=torch.uint8, device='cpu').pin_memory()
-    asynchronous_read = False
     h = aio_handle(BLOCK_SIZE, QUEUE_DEPTH, single_submit, overlap_events, IO_PARALLEL)
-    read_status = h.pread(aio_buffer, test_file, AIO_VALIDATE, asynchronous_read)
+    _validate_handle_state(h, single_submit, overlap_events)
+
+    read_status = h.sync_pread(aio_buffer, ref_file)
     assert read_status == 0
 
-    with open(test_file, 'rb') as f:
+    with open(ref_file, 'rb') as f:
         ref_buffer = list(f.read())
-
     assert ref_buffer == aio_buffer.tolist()
 
 
@@ -61,23 +84,22 @@ def test_parallel_read(tmpdir, single_submit, overlap_events):
                           (True,
                            True)])
 def test_async_read(tmpdir, single_submit, overlap_events):
-    _skip_on_aio_availability()
-    test_file = os.path.join(tmpdir, '_aio_random.pt')
-    with open(test_file, 'wb') as f:
-        f.write(os.urandom(IO_SIZE))
+    _skip_if_no_aio()
+
+    ref_file, _ = _do_ref_write(tmpdir)
 
     aio_buffer = torch.empty(IO_SIZE, dtype=torch.uint8, device='cpu').pin_memory()
-    asynchronous_read = True
     h = aio_handle(BLOCK_SIZE, QUEUE_DEPTH, single_submit, overlap_events, IO_PARALLEL)
-    read_status = h.pread(aio_buffer, test_file, AIO_VALIDATE, asynchronous_read)
+    _validate_handle_state(h, single_submit, overlap_events)
+
+    read_status = h.async_pread(aio_buffer, ref_file)
     assert read_status == 0
 
     wait_status = h.wait(AIO_VALIDATE)
     assert wait_status == 0
 
-    with open(test_file, 'rb') as f:
+    with open(ref_file, 'rb') as f:
         ref_buffer = list(f.read())
-
     assert ref_buffer == aio_buffer.tolist()
 
 
@@ -91,24 +113,22 @@ def test_async_read(tmpdir, single_submit, overlap_events):
                           (True,
                            True)])
 def test_parallel_write(tmpdir, single_submit, overlap_events):
-    _skip_on_aio_availability()
-    ref_file = os.path.join(tmpdir, '_py_write_random.pt')
-    ref_buffer = os.urandom(IO_SIZE)
-    with open(ref_file, 'wb') as f:
-        f.write(ref_buffer)
+    _skip_if_no_aio()
 
-    test_file = os.path.join(tmpdir, '_aio_write_random.pt')
-    aio_buffer = torch.ByteTensor(list(ref_buffer)).pin_memory()
-    asynchronous_write = False
+    ref_file, ref_buffer = _do_ref_write(tmpdir)
+
+    aio_file, aio_buffer = _get_test_file_and_buffer(tmpdir, ref_buffer)
 
     h = aio_handle(BLOCK_SIZE, QUEUE_DEPTH, single_submit, overlap_events, IO_PARALLEL)
-    write_status = h.pwrite(aio_buffer, test_file, AIO_VALIDATE, asynchronous_write)
+    _validate_handle_state(h, single_submit, overlap_events)
+
+    write_status = h.sync_pwrite(aio_buffer, aio_file)
     assert write_status == 0
 
-    assert os.path.isfile(test_file)
+    assert os.path.isfile(aio_file)
 
     filecmp.clear_cache()
-    assert filecmp.cmp(ref_file, test_file, shallow=False)
+    assert filecmp.cmp(ref_file, aio_file, shallow=False)
 
 
 @pytest.mark.parametrize('single_submit, overlap_events',
@@ -121,24 +141,22 @@ def test_parallel_write(tmpdir, single_submit, overlap_events):
                           (True,
                            True)])
 def test_async_write(tmpdir, single_submit, overlap_events):
-    _skip_on_aio_availability()
-    ref_file = os.path.join(tmpdir, '_py_write_random.pt')
-    ref_buffer = os.urandom(IO_SIZE)
-    with open(ref_file, 'wb') as f:
-        f.write(ref_buffer)
+    _skip_if_no_aio()
 
-    test_file = os.path.join(tmpdir, '_aio_write_random.pt')
-    aio_buffer = torch.ByteTensor(list(ref_buffer)).pin_memory()
-    asynchronous_write = True
+    ref_file, ref_buffer = _do_ref_write(tmpdir)
+
+    aio_file, aio_buffer = _get_test_file_and_buffer(tmpdir, ref_buffer)
 
     h = aio_handle(BLOCK_SIZE, QUEUE_DEPTH, single_submit, overlap_events, IO_PARALLEL)
-    write_status = h.pwrite(aio_buffer, test_file, AIO_VALIDATE, asynchronous_write)
+    _validate_handle_state(h, single_submit, overlap_events)
+
+    write_status = h.async_pwrite(aio_buffer, aio_file)
     assert write_status == 0
 
     wait_status = h.wait(AIO_VALIDATE)
     assert wait_status == 0
 
-    assert os.path.isfile(test_file)
+    assert os.path.isfile(aio_file)
 
     filecmp.clear_cache()
-    assert filecmp.cmp(ref_file, test_file, shallow=False)
+    assert filecmp.cmp(ref_file, aio_file, shallow=False)

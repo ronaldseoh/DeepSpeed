@@ -38,6 +38,14 @@ struct deepspeed_aio_handle_t {
                const bool validate,
                const bool async);
 
+    int sync_pread(torch::Tensor& buffer, const char* filename);
+
+    int sync_pwrite(const torch::Tensor& buffer, const char* filename);
+
+    int async_pread(torch::Tensor& buffer, const char* filename);
+
+    int async_pwrite(const torch::Tensor& buffer, const char* filename);
+
     int wait(const bool validate);
 
     void _stop_threads();

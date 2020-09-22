@@ -1,15 +1,25 @@
 #!/bin/bash
-if [[ -z $1 ]]; then
-	echo "Usage: $0 <file to read>"
-	exit 1
+if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 <input file> <output log dir>"
+    exit 1
 fi
 
-FILE=$1
+INPUT_FILE=$1
+if [[ ! -f ${INPUT_FILE} ]]; then
+    echo "Input file not found: ${INPUT_FILE}"
+    exit 1
+fi
+
+LOG_DIR=$2
 RUN_SCRIPT=./test_ds_aio.py
-READ_OPT="--read_file ${FILE}"
-LOG_DIR=/tmp/py_ds_aio_read
-mkdir -p ${LOG_DIR}
-rm -f ${LOG_DIR}/*
+READ_OPT="--read_file ${INPUT_FILE}"
+
+if [[ -d ${LOG_DIR} ]]; then
+    rm -f ${LOG_DIR}/*
+else
+    mkdir -p ${LOG_DIR}
+fi
+
 for sub in single block; do
     if [[ $sub == "single" ]]; then
         sub_opt="--single_submit"
@@ -22,16 +32,18 @@ for sub in single block; do
         else
             ov_opt=""
         fi
-        for p in 1 2 4 8 16 32; do
-            for d in 1 2 4 8 16 32; do
-                for bs in 128K 256K 512K 1M; do
-                    SCHED_OPTS="${sub_opt} ${ov_opt} --handle --threads 1"
-                    OPTS="--io_parallel ${p} --queue_depth ${d} --block_size ${bs}"
-                    LOG="${LOG_DIR}/read_${sub}_${ov}_p${p}_d${d}_bs${bs}.txt"
-                    cmd="python ${RUN_SCRIPT} ${READ_OPT} ${OPTS} ${SCHED_OPTS} &> ${LOG}"
-                    echo ${cmd}
-                    eval ${cmd}
-                    sleep 2
+        for t in 1 2 4 8; do
+            for p in 1 ; do
+                for d in 1 2 4 8 16 32; do
+                    for bs in 128K 256K 512K 1M; do
+                        SCHED_OPTS="${sub_opt} ${ov_opt} --handle --threads ${t}"
+                        OPTS="--io_parallel ${p} --queue_depth ${d} --block_size ${bs}"
+                        LOG="${LOG_DIR}/read_${sub}_${ov}_t${t}_p${p}_d${d}_bs${bs}.txt"
+                        cmd="python ${RUN_SCRIPT} ${READ_OPT} ${OPTS} ${SCHED_OPTS} &> ${LOG}"
+                        echo ${cmd}
+                        eval ${cmd}
+                        sleep 2
+                    done
                 done
             done
         done
