@@ -37,7 +37,7 @@ except ImportError:
     from torch._utils import _unflatten_dense_tensors as unflatten
 
 
-def print_rank_0(message, debug=True, force=False):
+def print_rank_0(message, debug=False, force=False):
     if torch.distributed.get_rank() == 0 and (debug or force):
         print(message)
 
@@ -289,7 +289,7 @@ class PartitionedParameterCoordinator(object):
         self._print_prefetch_elements_info(sub_module, params_to_prefetch)
         print_rank_0(
             f"{'--' * self.hierarchy}--PreFetching parameters {[param.ds_id for param in params_to_prefetch]} and available {self.total_available_parameter_numel}, max limit {self.max_available_parameters_in_numel}",
-            force=True)
+            force=False)
 
     def _print_prefetch_elements_info(self, sub_module, params_to_prefetch):
         sub_module_numel = 0.0
@@ -395,11 +395,11 @@ class PartitionedParameterCoordinator(object):
                 self._decrement_available_parameter_numel(param.ds_numel)
                 see_memory_usage(
                     f"Before releasing param {param.ds_id} with numel{param.numel()}",
-                    force=True)
+                    force=False)
                 param.partition(hierarchy=self.hierarchy)
                 see_memory_usage(
                     f"After releasing param {param.ds_id} has numel{param.numel()} ",
-                    force=True)
+                    force=False)
 
                 param.ds_status = ZeroParamStatus.NOT_AVAILABLE
             else:
@@ -617,18 +617,18 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             #not sure why apex was cloning the weights before flattening
             #removing cloning here
 
-            see_memory_usage(f"Before moving param group {i} to CPU")
+            see_memory_usage(f"Before moving param group {i} to CPU", force=False)
             #move all the parameters to cpu to free up GPU space for creating flat buffer
             move_to_cpu(self.fp16_groups[i])
-            see_memory_usage(f"After moving param group {i} to CPU")
+            see_memory_usage(f"After moving param group {i} to CPU", force=False)
 
             #create flat buffer in CPU and move to GPU
             self.fp16_groups_flat.append(
                 flatten_dense_tensors_aligned(
                     self.fp16_groups[i],
-                    dist.get_world_size(group=self.dp_process_group)).cuda(
-                        torch.cuda.current_device()))
-            see_memory_usage(f"After flattening and moving param group {i} to GPU")
+                    dist.get_world_size(group=self.dp_process_group),
+                    self.dp_process_group).cuda(torch.cuda.current_device()))
+            see_memory_usage(f"After flattening and moving param group {i} to GPU", force=False)
 
             # set model fp16 weight to slices of flattened buffer
             updated_params = _unflatten_dense_tensors(self.fp16_groups_flat[i],
@@ -642,16 +642,16 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             self.fp32_groups_flat.append(
                 self.fp16_groups_flat[i].clone().float().detach())
 
-            see_memory_usage(f"After creating fp32 copy {i}")
+            see_memory_usage(f"After creating fp32 copy {i}", force=False)
 
             # modify optimizer of have flat master weight
             self.fp32_groups_flat[
                 i].requires_grad = True  # keep this in case internal optimizer uses it
             param_group['params'] = [self.fp32_groups_flat[i]]
 
-        see_memory_usage("Before initializing optimizer states")
+        see_memory_usage("Before initializing optimizer states", force=False)
         self.initialize_optimizer_states()
-        see_memory_usage("After initializing optimizer states")
+        see_memory_usage("After initializing optimizer states", force=False)
 
         if dist.get_rank() == 0:
             logger.info(f"optimizer state initialized")
@@ -717,7 +717,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             self.cur_iter = 0
 
         if dist.get_rank(group=self.dp_process_group) == 0:
-            see_memory_usage(f"After initializing ZeRO optimizer", force=True)
+            see_memory_usage(f"After initializing ZeRO optimizer", force=False)
 
     def reset_ds_tensor(self):
         for name, param in self.module.named_parameters(recurse=True):
@@ -740,7 +740,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         print_rank_0(
             f'ZeRO 3: Total persistent parameters: {total_persistent_parameters}',
-            force=True)
+            force=False)
         return persistent_params
 
     def _register_hooks_recursively(self, module, count=[0]):
@@ -803,31 +803,31 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
     def pre_sub_module_forward_function(self, sub_module):
         see_memory_usage(f"Before sub module function {sub_module.__class__.__name__}",
-                         force=True)
+                         force=False)
 
         self.param_coordinator.record_trace(sub_module)
 
         self.param_coordinator.fetch_sub_module(sub_module)
         see_memory_usage(
             f"Before sub module function {sub_module.__class__.__name__} after fetch",
-            force=True)
+            force=False)
 
         self.param_coordinator.prefetch_next_sub_modules(sub_module,
                                                          numel=self.prefetch_elements)
         see_memory_usage(
             f"Before sub module function {sub_module.__class__.__name__} after prefetch",
-            force=True)
+            force=False)
 
         self.param_coordinator.increment_step(sub_module)
 
     def post_sub_module_forward_function(self, sub_module):
         see_memory_usage(
             f"After sub module function {sub_module.__class__.__name__} before release",
-            force=True)
+            force=False)
         self.param_coordinator.release_sub_module(sub_module)
         see_memory_usage(
             f"After sub module function {sub_module.__class__.__name__} after release",
-            force=True)
+            force=False)
 
     def pre_sub_module_backward_function(self, sub_module):
         self.param_coordinator.record_trace(sub_module)
@@ -842,11 +842,11 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
     def post_sub_module_backward_function(self, sub_module):
         see_memory_usage(
             f"After sub module backward function {sub_module.__class__.__name__} before release",
-            force=True)
+            force=False)
         self.param_coordinator.release_sub_module(sub_module)
         see_memory_usage(
             f"After sub module backward function {sub_module.__class__.__name__} after release",
-            force=True)
+            force=False)
 
     def _release_ipg_buffers(self):
         if self.contiguous_gradients:
@@ -931,7 +931,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         self._release_ipg_buffers()
 
-        see_memory_usage(f"End ipg_epilogue")
+        see_memory_usage(f"End ipg_epilogue", force=False)
 
     # resets all partition to no reduced
     # sets remianing grads to the total number of grads in each partition
@@ -1039,7 +1039,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         percent_of_bucket_size = (100.0 * elem_count) // self.reduce_bucket_size
         see_memory_usage(
             f"{tag}: elems in_bucket {self.elements_in_ipg_bucket} param {param_elems} max_percent {percent_of_bucket_size}"
-        )
+        ,force=False)
 
     ###############Idependent Partition Gradient ########################
     def reduce_independent_p_g_buckets_and_remove_grads(self, param, i):
@@ -1137,11 +1137,11 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
                 for param_in_partition in group:
                     total_size += param_in_partition.ds_tensor.numel()
 
-            see_memory_usage(f"before copying {total_size} gradients into partition")
+            see_memory_usage(f"before copying {total_size} gradients into partition", force=False)
             self.grads_in_partition = torch.empty(int(total_size),
                                                   dtype=torch.half,
                                                   device=torch.cuda.current_device())
-            see_memory_usage(f"after copying {total_size} gradients into partition")
+            see_memory_usage(f"after copying {total_size} gradients into partition", force=False)
 
         for param in self.previous_reduced_grads:
 
@@ -1525,7 +1525,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         """
 
         print_rank_0(f"Inside Step function")
-        see_memory_usage(f"In step before checking overflow")
+        see_memory_usage(f"In step before checking overflow", force=False)
 
         print_rank_0("Finished Tracing at Beginning of Step")
         self.param_coordinator.hierarchy = 0
@@ -1543,9 +1543,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         prev_scale = self.loss_scale
         self._update_scale(self.overflow)
         if self.overflow:
-            see_memory_usage('After overflow before clearing gradients')
+            see_memory_usage('After overflow before clearing gradients', force=False)
             self.zero_grad()
-            see_memory_usage('After overflow after clearing gradients')
+            see_memory_usage('After overflow after clearing gradients', force=False)
 
             logger.info(
                 "[deepscale] OVERFLOW! Rank {} Skipping step. Attempted loss scale: {}, "
@@ -1611,7 +1611,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         #Gathering persisting parameters
         self.persistent_parameters[0].all_gather(self.persistent_parameters)
 
-        see_memory_usage('After zero_optimizer step')
+        see_memory_usage('After zero_optimizer step', force=False)
         print_rank_0(f"------------------Finishing Step-----------------------")
         return
 
@@ -1713,7 +1713,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
         print_rank_0(
             f"Total fully available parameters {self.param_coordinator.total_available_parameter_numel}"
         )
-        see_memory_usage(f"Before backward")
+        see_memory_usage(f"Before backward", force=False)
         if self.contiguous_gradients:
             self.ipg_buffer = []
             buf_0 = torch.empty(self.reduce_bucket_size,

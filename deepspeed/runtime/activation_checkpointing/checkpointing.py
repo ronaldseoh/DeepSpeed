@@ -353,7 +353,7 @@ class CheckpointFunction(torch.autograd.Function):
         global cuda_device, transport_stream, PARTITION_ACTIVATIONS, buffer_0, buffer_1, buffer_0_offset, buffer_1_offset
 
         if cuda_device is None:
-            see_memory_usage("First Forward Begining", force=True)
+            see_memory_usage("First Forward Begining", force=False)
             if dist.get_rank() == 0:
                 logger.info(f"Activation Checkpointing Information")
                 logger.info(
@@ -421,12 +421,12 @@ class CheckpointFunction(torch.autograd.Function):
         ctx.fwd_cuda_rng_state = torch.cuda.get_rng_state()
         ctx.fwd_cuda_rng_state_tracker = get_cuda_rng_tracker().get_states()
 
-        see_memory_usage("Before running forward on the layer", force=True)
+        see_memory_usage("Before running forward on the layer", force=False)
         # ctx.save_for_backward(*args)
         with torch.no_grad():
             outputs = run_function(*inputs_cuda)
 
-        see_memory_usage("After running forward on the layer", force=True)
+        see_memory_usage("After running forward on the layer", force=False)
         del inputs_cuda
 
         # with torch.cuda.stream(transport_stream):
@@ -496,7 +496,7 @@ class CheckpointFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, *grads):
         global timers
-        see_memory_usage("In backward", force=True)
+        see_memory_usage("In backward", force=False)
         # removing pointers to the contiguous buffer memory
         # so that they can be garbage collected once the checkpoints
         # have been used
@@ -519,7 +519,7 @@ class CheckpointFunction(torch.autograd.Function):
             data_offsets = []
             size_offsets = []
 
-        see_memory_usage("In backward checkpointing code", force=True)
+        see_memory_usage("In backward checkpointing code", force=False)
         if not torch.autograd._is_checkpoint_valid():
             raise RuntimeError("Checkpointing is not compatible with .grad(), "
                                "please use .backward() if possible")
@@ -549,12 +549,12 @@ class CheckpointFunction(torch.autograd.Function):
         #     current_stream=torch.cuda.current_stream()
         #     current_stream.wait_stream(transport_stream)
 
-        see_memory_usage("In backward checkpointing code before forward", force=True)
+        see_memory_usage("In backward checkpointing code before forward", force=False)
 
         with torch.enable_grad():
             outputs = ctx.run_function(*detached_inputs)
 
-        see_memory_usage("In backward checkpointing code after forward", force=True)
+        see_memory_usage("In backward checkpointing code after forward", force=False)
         # Set the states back to what it was at the start of this function.
         torch.set_rng_state(bwd_cpu_rng_state)
         _set_cuda_rng_state(bwd_cuda_rng_state)
@@ -573,11 +573,11 @@ class CheckpointFunction(torch.autograd.Function):
                 output_tensors.append(out)
                 grad_tensors.append(grad)
 
-        see_memory_usage("In backward checkpointing code before backward", force=True)
+        see_memory_usage("In backward checkpointing code before backward", force=False)
 
         torch.autograd.backward(output_tensors, grad_tensors)
 
-        see_memory_usage("After backward checkpointing code before backward", force=True)
+        see_memory_usage("After backward checkpointing code before backward", force=False)
 
         if PROFILE_TIME:
             timers('backward').stop()

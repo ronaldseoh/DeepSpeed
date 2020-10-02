@@ -7,7 +7,7 @@ from deepspeed.runtime.utils import see_memory_usage
 from deepspeed.utils import log_dist
 
 
-def print_rank_0(message, debug=True, force=False):
+def print_rank_0(message, debug=False, force=False):
     if torch.distributed.get_rank() == 0 and (debug or force):
         print(message)
 
@@ -121,7 +121,7 @@ class InsertPostInitMethodToModuleSubClasses(object):
         torch.nn.modules.module.Module.ds_all_parameters = classmethod(all_parameters)
 
         if self.zero_modules:
-            linear_bk = torch.nn.functional.linear
+            self.linear_bk = torch.nn.functional.linear
             torch.nn.functional.linear = LinearFunctionForZeroStage3.apply
 
             # torch.nn.modules.linear.Linear_bk = torch.nn.modules.linear.Linear
@@ -147,6 +147,7 @@ class InsertPostInitMethodToModuleSubClasses(object):
         torch.empty = _orig_torch_empty
 
         if self.zero_modules:
+            torch.nn.functional.linear = self.linear_bk
             # torch.nn.modules.linear.Linear = torch.nn.modules.linear.Linear_bk
             # torch.nn.Linear = torch.nn.Linear_bk
             # delattr(torch.nn.modules.linear, 'Linear_bk')
@@ -312,7 +313,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         if param.ds_status is ZeroParamStatus.AVAILABLE:
             print_rank_0(
                 f"Partitioning param id {param.ds_id} reuse buffers {reuse_buffers}",
-                force=True)
+                force=False)
             if reuse_buffers and (param.ds_numel == 16384 * 16384 * 4
                                   or param.ds_numel == 16384 * 16384):
                 buffer = param.data
@@ -576,7 +577,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #param.grad=None
         #param.grad.test()
         print_rank_0(f"Partitioning gradient of size {param.grad.numel()}")
-        see_memory_usage("Before partitioning gradients", force=True)
+        see_memory_usage("Before partitioning gradients", force=False)
         partition_size = param.ds_tensor.numel()
 
         if partition_buffer is None:
@@ -600,4 +601,4 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                                                            elements))
         #print("after partition gradients")
         param.grad.data = partition_buffer.data
-        see_memory_usage("After partitioning gradients", force=True)
+        see_memory_usage("After partitioning gradients", force=False)
