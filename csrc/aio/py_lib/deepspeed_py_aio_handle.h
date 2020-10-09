@@ -9,9 +9,9 @@ struct deepspeed_aio_handle_t {
     const int _num_threads;
     deepspeed_aio_config_t _aio_config;
 
-    std::shared_ptr<struct io_op_desc_t> _scheduled_op;
     std::vector<std::shared_ptr<struct deepspeed_aio_thread_t>> _thread_contexts;
     std::vector<std::thread> _threads;
+    int _num_pending_ops;
 
     deepspeed_aio_handle_t(const int block_size,
                            const int queue_depth,
@@ -49,13 +49,13 @@ struct deepspeed_aio_handle_t {
 
     int async_pwrite(const torch::Tensor& buffer, const char* filename);
 
-    int wait(const bool validate);
+    int wait();
 
     void _stop_threads();
 
     void _schedule_aio_work(std::shared_ptr<struct io_op_desc_t> scheduled_op);
 
-    void _wait_for_aio_work();
+    std::shared_ptr<struct io_op_desc_t> _wait_for_aio_work();
 
     bool _is_valid_parallel_aio_op(const bool read_op, const long long int num_bytes);
 };

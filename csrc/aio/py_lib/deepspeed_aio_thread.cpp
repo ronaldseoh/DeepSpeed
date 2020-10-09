@@ -6,8 +6,14 @@ io_op_desc_t::io_op_desc_t(const bool read_op,
                            const torch::Tensor& buffer,
                            const int fd,
                            const char* filename,
-                           const long long int num_bytes)
-    : _read_op(read_op), _buffer(buffer), _fd(fd), _filename(filename), _num_bytes(num_bytes)
+                           const long long int num_bytes,
+                           const bool validate)
+    : _read_op(read_op),
+      _buffer(buffer),
+      _fd(fd),
+      _filename(filename),
+      _num_bytes(num_bytes),
+      _validate(validate)
 {
     _cpu_buffer = _buffer.is_cuda() ? _buffer.to(torch::kCPU).pin_memory() : _buffer;
     _contiguous_buffer = _cpu_buffer.contiguous();
@@ -23,10 +29,8 @@ void io_op_desc_t::fini()
 deepspeed_aio_thread_t::deepspeed_aio_thread_t(const int tid, deepspeed_aio_config_t& aio_config)
     : _tid(tid),
       _aio_config(aio_config),
-      _next_io_op(nullptr),
       _aio_ctxt(new aio_context(aio_config._block_size, aio_config._queue_depth)),
-      _time_to_exit(false),
-      _work_completed(false)
+      _time_to_exit(false)
 {
 }
 
@@ -39,10 +43,11 @@ void deepspeed_aio_thread_t::run()
 
         {
             std::unique_lock<std::mutex> lock(_work_sync._mutex);
-            _work_sync._cond_var.wait(lock, [this] { return (_next_io_op || _time_to_exit); });
-            if (_next_io_op) {
-                next_io_op = _next_io_op;
-                _next_io_op = nullptr;
+            _work_sync._cond_var.wait(lock,
+                                      [this] { return (!_work_queue.empty() || _time_to_exit); });
+            if (!_work_queue.empty()) {
+                next_io_op = _work_queue.front();
+                _work_queue.pop();
             }
         }
 
@@ -62,7 +67,7 @@ void deepspeed_aio_thread_t::run()
 
             {
                 std::lock_guard<std::mutex> lock(_complete_sync._mutex);
-                _work_completed = true;
+                _complete_queue.push(next_io_op);
             }
             _complete_sync._cond_var.notify_one();
         }

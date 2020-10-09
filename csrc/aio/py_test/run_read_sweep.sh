@@ -20,6 +20,9 @@ else
     mkdir -p ${LOG_DIR}
 fi
 
+DISABLE_CACHE="sync; sudo bash -c 'echo 1 > /proc/sys/vm/drop_caches' "
+SYNC="sync"
+
 for sub in single block; do
     if [[ $sub == "single" ]]; then
         sub_opt="--single_submit"
@@ -40,8 +43,13 @@ for sub in single block; do
                         OPTS="--io_parallel ${p} --queue_depth ${d} --block_size ${bs}"
                         LOG="${LOG_DIR}/read_${sub}_${ov}_t${t}_p${p}_d${d}_bs${bs}.txt"
                         cmd="python ${RUN_SCRIPT} ${READ_OPT} ${OPTS} ${SCHED_OPTS} &> ${LOG}"
+                        echo ${DISABLE_CACHE}
                         echo ${cmd}
+                        echo ${SYNC}
+
+                        eval ${DISABLE_CACHE}
                         eval ${cmd}
+                        eval ${SYNC}
                         sleep 2
                     done
                 done

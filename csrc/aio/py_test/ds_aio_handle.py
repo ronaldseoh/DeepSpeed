@@ -65,7 +65,7 @@ def main_parallel_read(pool_params):
     start_time = time.time()
     ret = handle.pread(ctxt['buffer'], ctxt['file'], args.validate, True)
     assert ret != -1
-    handle.wait(args.validate)
+    handle.wait()
     end_time = time.time()
     ctxt['elapsed_sec'] += end_time - start_time
 
@@ -78,7 +78,7 @@ def main_parallel_write(pool_params):
     start_time = time.time()
     ret = handle.pwrite(ctxt['buffer'], ctxt['file'], args.validate, True)
     assert ret != -1
-    handle.wait(args.validate)
+    handle.wait()
     end_time = time.time()
     ctxt['elapsed_sec'] += end_time - start_time
 
