@@ -5,6 +5,7 @@ import argparse
 import pytest
 import json
 import os
+import torch.distributed as dist
 from common import distributed_test
 from simple_model import SimpleModel, SimpleOptimizer, random_dataloader, args_from_dict
 
@@ -225,15 +226,18 @@ def test_adamw_fp16_empty_grad(tmpdir):
 
 
 @pytest.mark.parametrize('zero_stage, use_cpu_offload',
-                         [
-                             (1,
-                              False),
-                             (2,
-                              False),
-                             (2,
-                              True),
-                         ])
-def test_adam_fp16_zero_onecycle_compatibility(tmpdir, zero_stage, use_cpu_offload):
+                         [(1,
+                           False),
+                          (2,
+                           False),
+                          (2,
+                           True),
+                          (3,
+                           False)])
+def test_adam_fp16_zero_onecycle_compatibility(tmpdir,
+                                               monkeypatch,
+                                               zero_stage,
+                                               use_cpu_offload):
     if use_cpu_offload and not deepspeed.ops.__installed_ops__['cpu-adam']:
         pytest.skip("cpu-adam is not installed")
     config_dict = {
@@ -271,10 +275,16 @@ def test_adam_fp16_zero_onecycle_compatibility(tmpdir, zero_stage, use_cpu_offlo
     args = args_from_dict(tmpdir, config_dict)
     hidden_dim = 10
 
-    model = SimpleModel(hidden_dim, empty_grad=True)
-
     @distributed_test(world_size=[1])
-    def _test_adam_fp16_zero_onecycle_compatibility(args, model, hidden_dim):
+    def _test_adam_fp16_zero_onecycle_compatibility(args, zero_stage, hidden_dim):
+
+        if zero_stage == 3:
+            monkeypatch.setenv('LOCAL_RANK', dist.get_rank())
+            with deepspeed.ScatteredParameters(zero_modules=True):
+                model = SimpleModel(hidden_dim, empty_grad=True)
+        else:
+            model = SimpleModel(hidden_dim, empty_grad=True)
+
         model, _, _,_ = deepspeed.initialize(args=args,
                                              model=model,
                                              model_parameters=model.parameters())
@@ -288,20 +298,20 @@ def test_adam_fp16_zero_onecycle_compatibility(tmpdir, zero_stage, use_cpu_offlo
             model.step()
 
     _test_adam_fp16_zero_onecycle_compatibility(args=args,
-                                                model=model,
+                                                zero_stage=zero_stage,
                                                 hidden_dim=hidden_dim)
 
 
 @pytest.mark.parametrize('zero_stage, use_cpu_offload',
-                         [
-                             (1,
-                              False),
-                             (2,
-                              False),
-                             (2,
-                              True),
-                         ])
-def test_zero_static_scale(tmpdir, zero_stage, use_cpu_offload):
+                         [(1,
+                           False),
+                          (2,
+                           False),
+                          (2,
+                           True),
+                          (3,
+                           False)])
+def test_zero_static_scale(tmpdir, monkeypatch, zero_stage, use_cpu_offload):
     if use_cpu_offload and not deepspeed.ops.__installed_ops__['cpu-adam']:
         pytest.skip("cpu-adam is not installed")
     config_dict = {
@@ -320,6 +330,57 @@ def test_zero_static_scale(tmpdir, zero_stage, use_cpu_offload):
         "zero_optimization": {
             "stage": zero_stage,
             "cpu_offload": use_cpu_offload
+        }
+    }
+    args = args_from_dict(tmpdir, config_dict)
+
+    @distributed_test(world_size=2)
+    def _test_zero_static_scale(args, zero_stage):
+        hidden_dim = 10
+        if zero_stage == 3:
+            monkeypatch.setenv('LOCAL_RANK', dist.get_rank())
+            with deepspeed.ScatteredParameters(zero_modules=True):
+                model = SimpleModel(hidden_dim, empty_grad=True)
+        else:
+            model = SimpleModel(hidden_dim, empty_grad=True)
+
+        model, optim, _, _ = deepspeed.initialize(args=args,
+                                            model=model,
+                                            model_parameters=model.parameters())
+
+        # Ensure the static scaler is configured.
+        assert optim.dynamic_loss_scale == False
+        assert optim.loss_scaler.loss_scale == 138.
+
+        # Now make sure things work..
+        data_loader = random_dataloader(model=model,
+                                        total_samples=10,
+                                        hidden_dim=hidden_dim,
+                                        device=model.device)
+        for n, batch in enumerate(data_loader):
+            loss = model(batch[0], batch[1])
+            model.backward(loss)
+            model.step()
+
+    _test_zero_static_scale(args, zero_stage)
+
+
+def test_zero_static_scale_deprecated_format(tmpdir):
+    config_dict = {
+        "train_batch_size": 4,
+        "steps_per_print": 1,
+        "optimizer": {
+            "type": "Adam",
+            "params": {
+                "lr": 0.00015
+            }
+        },
+        "fp16": {
+            "enabled": True,
+            "loss_scale": 138.
+        },
+        "zero_optimization": {
+            "stage": 1
         }
     }
     args = args_from_dict(tmpdir, config_dict)
@@ -349,59 +410,16 @@ def test_zero_static_scale(tmpdir, zero_stage, use_cpu_offload):
     _test_zero_static_scale(args)
 
 
-def test_zero_static_scale_deprecated_format(tmpdir):
-    config_dict = {
-        "train_batch_size": 4,
-        "steps_per_print": 1,
-        "optimizer": {
-            "type": "Adam",
-            "params": {
-                "lr": 0.00015
-            }
-        },
-        "fp16": {
-            "enabled": True,
-            "loss_scale": 138.
-        },
-        "zero_optimization": True
-    }
-    args = args_from_dict(tmpdir, config_dict)
-
-    @distributed_test(world_size=2)
-    def _test_zero_static_scale(args):
-        hidden_dim = 10
-        model = SimpleModel(hidden_dim, empty_grad=True)
-        model, optim, _,_ = deepspeed.initialize(args=args,
-                                            model=model,
-                                            model_parameters=model.parameters())
-
-        # Ensure the static scaler is configured.
-        assert optim.dynamic_loss_scale == False
-        assert optim.loss_scaler.loss_scale == 138.
-
-        # Now make sure things work..
-        data_loader = random_dataloader(model=model,
-                                        total_samples=10,
-                                        hidden_dim=hidden_dim,
-                                        device=model.device)
-        for n, batch in enumerate(data_loader):
-            loss = model(batch[0], batch[1])
-            model.backward(loss)
-            model.step()
-
-    _test_zero_static_scale(args)
-
-
 @pytest.mark.parametrize('zero_stage, use_cpu_offload',
-                         [
-                             (1,
-                              False),
-                             (2,
-                              False),
-                             (2,
-                              True),
-                         ])
-def test_zero_allow_untested_optimizer(tmpdir, zero_stage, use_cpu_offload):
+                         [(1,
+                           False),
+                          (2,
+                           False),
+                          (2,
+                           True),
+                          (3,
+                           False)])
+def test_zero_allow_untested_optimizer(tmpdir, monkeypatch, zero_stage, use_cpu_offload):
     if use_cpu_offload and not deepspeed.ops.__installed_ops__['cpu-adam']:
         pytest.skip("cpu-adam is not installed")
     config_dict = {
@@ -419,9 +437,14 @@ def test_zero_allow_untested_optimizer(tmpdir, zero_stage, use_cpu_offload):
     args = args_from_dict(tmpdir, config_dict)
 
     @distributed_test(world_size=[1])
-    def _test_zero_allow_untested_optimizer(args):
+    def _test_zero_allow_untested_optimizer(args, zero_stage):
         hidden_dim = 10
-        model = SimpleModel(hidden_dim, empty_grad=True)
+        if zero_stage == 3:
+            monkeypatch.setenv('LOCAL_RANK', dist.get_rank())
+            with deepspeed.ScatteredParameters(zero_modules=True):
+                model = SimpleModel(hidden_dim, empty_grad=True)
+        else:
+            model = SimpleModel(hidden_dim, empty_grad=True)
         optimizer = SimpleOptimizer(model.parameters())
         with pytest.raises(AssertionError):
             model, optim, _,_ = deepspeed.initialize(args=args,
@@ -429,19 +452,19 @@ def test_zero_allow_untested_optimizer(tmpdir, zero_stage, use_cpu_offload):
                                                     optimizer=optimizer,
                                                     model_parameters=model.parameters())
 
-    _test_zero_allow_untested_optimizer(args)
+    _test_zero_allow_untested_optimizer(args, zero_stage)
 
 
 @pytest.mark.parametrize('zero_stage, use_cpu_offload',
-                         [
-                             (1,
-                              False),
-                             (2,
-                              False),
-                             (2,
-                              True),
-                         ])
-def test_zero_empty_partition(tmpdir, zero_stage, use_cpu_offload):
+                         [(1,
+                           False),
+                          (2,
+                           False),
+                          (2,
+                           True),
+                          (3,
+                           False)])
+def test_zero_empty_partition(tmpdir, monkeypatch, zero_stage, use_cpu_offload):
     if use_cpu_offload and not deepspeed.ops.__installed_ops__['cpu-adam']:
         pytest.skip("cpu-adam is not installed")
     config_dict = {
@@ -467,9 +490,15 @@ def test_zero_empty_partition(tmpdir, zero_stage, use_cpu_offload):
     args = args_from_dict(tmpdir, config_dict)
 
     @distributed_test(world_size=[3])
-    def _test_zero_empty_partition(args):
+    def _test_zero_empty_partition(args, zero_stage):
         hidden_dim = 1
-        model = SimpleModel(hidden_dim)
+        if zero_stage == 3:
+            monkeypatch.setenv('LOCAL_RANK', dist.get_rank())
+            with deepspeed.ScatteredParameters(zero_modules=False):
+                model = SimpleModel(hidden_dim)
+        else:
+            model = SimpleModel(hidden_dim)
+
         # Ensure model has 2 parameters, to cause empty partition with DP=3
         assert len(list(model.parameters())) == 2
         model, _, _, _ = deepspeed.initialize(args=args,
@@ -486,7 +515,7 @@ def test_zero_empty_partition(tmpdir, zero_stage, use_cpu_offload):
             model.backward(loss)
             model.step()
 
-    _test_zero_empty_partition(args)
+    _test_zero_empty_partition(args, zero_stage)
 
 
 def test_adam_amp_basic(tmpdir):
@@ -634,8 +663,13 @@ def test_adam_amp_o2_empty_grad(tmpdir):
                           (2,
                            torch.optim.Adam),
                           (2,
+                           apex.optimizers.FusedAdam),
+                          (3,
                            apex.optimizers.FusedAdam)])
-def test_zero_supported_client_optimizer(tmpdir, zero_stage, optimizer_constructor):
+def test_zero_supported_client_optimizer(tmpdir,
+                                         monkeypatch,
+                                         zero_stage,
+                                         optimizer_constructor):
     config_dict = {
         "train_batch_size": 2,
         "steps_per_print": 1,
@@ -649,17 +683,22 @@ def test_zero_supported_client_optimizer(tmpdir, zero_stage, optimizer_construct
     args = args_from_dict(tmpdir, config_dict)
     hidden_dim = 10
 
-    model = SimpleModel(hidden_dim, empty_grad=False)
-
     @distributed_test(world_size=[1])
-    def _test_zero_supported_client_optimizer(args, model, optimizer_constructor):
+    def _test_zero_supported_client_optimizer(args, zero_stage, optimizer_constructor):
+        if zero_stage == 3:
+            monkeypatch.setenv('LOCAL_RANK', dist.get_rank())
+            with deepspeed.ScatteredParameters(zero_modules=True):
+                model = SimpleModel(hidden_dim, empty_grad=False)
+        else:
+            model = SimpleModel(hidden_dim, empty_grad=False)
+
         client_optimizer = optimizer_constructor(params=model.parameters())
         model, _, _, _ = deepspeed.initialize(args=args,
                                                model=model,
                                                optimizer=client_optimizer)
 
     _test_zero_supported_client_optimizer(args=args,
-                                          model=model,
+                                          zero_stage=zero_stage,
                                           optimizer_constructor=optimizer_constructor)
 
 

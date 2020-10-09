@@ -62,10 +62,10 @@ try:
     importlib.import_module('deepspeed.ops.adam.cpu_adam_op')
     print(f'{SUCCESS} cpu-adam (used by ZeRO-offload) successfully installed.')
 except ImportError:
-    warnings.warn('deepspeed sparse attention is NOT installed.')
+    warnings.warn('cpu-adam is NOT installed.')
 
 try:
     importlib.import_module('deepspeed.ops.aio')
-    print('deepspeed asynchronous i/o kernels successfully installed.')
+    print(f'{SUCCESS} asynchronous i/o kernels successfully installed.')
 except ImportError:
-    warnings.warn('deepspeed asynchronous i/o kernels are NOT installed.')
+    warnings.warn('asynchronous i/o kernels are NOT installed.')

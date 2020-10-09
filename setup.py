@@ -16,6 +16,7 @@ import warnings
 import cpufeature
 from setuptools import setup, find_packages
 from torch.utils.cpp_extension import CUDAExtension, BuildExtension, CppExtension
+import time
 
 VERSION = "0.3.0"
 
@@ -357,6 +358,8 @@ with open('deepspeed/git_version_info_installed.py', 'w') as fd:
 
 print(f'install_requires={install_requires}')
 
+start_time = time.time()
+
 setup(name='deepspeed',
       version=f"{VERSION}+{git_hash}",
       description='DeepSpeed library',
@@ -380,3 +383,6 @@ setup(name='deepspeed',
       license='MIT',
       ext_modules=ext_modules,
       cmdclass=cmdclass)
+
+end_time = time.time()
+print(f'deepspeed build time = {end_time - start_time} secs')

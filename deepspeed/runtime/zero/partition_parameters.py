@@ -4,6 +4,7 @@ from enum import Enum
 import itertools
 from deepspeed.runtime.zero.linear import LinearModuleForZeroStage3, LinearFunctionForZeroStage3
 from deepspeed.runtime.utils import see_memory_usage
+from deepspeed.utils import log_dist
 
 
 def print_rank_0(message, debug=True, force=False):
@@ -219,7 +220,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
         def partition(param_list=None, hierarchy=0):
             cls = param
-            print_rank_0(f"{'--'*hierarchy}----Partitioning param with id {cls.ds_id}")
+            print_rank_0(
+                f"{'--'*hierarchy}----Partitioning param with id {cls.ds_id} type {cls.dtype} dev {cls.device} shape {cls.shape}"
+            )
             if param_list is None:
                 param_list = [cls]
             self._partition(param_list)
@@ -243,6 +246,12 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                     partition_buffers = [partition_buffers]
             self._partition_gradients(param_list, partition_buffers=partition_buffers)
 
+        def aligned_size():
+            return self._aligned_size(param)
+
+        def padding_size():
+            return self._padding_size(param)
+
         #Collectives for gathering and partitioning parameters
         param.all_gather = all_gather
         param.partition = partition
@@ -250,6 +259,17 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #Collective for averaging gradients
         param.reduce_gradients_at_owner = reduce_gradients_at_owner
         param.partition_gradients = partition_gradients
+
+        # Partitioning size utilities
+        param.aligned_size = aligned_size
+        param.padding_size = padding_size
+
+    def _aligned_size(self, param):
+        return param.ds_numel + self._padding_size(param)
+
+    def _padding_size(self, param):
+        remainder = param.ds_numel % self.world_size
+        return (self.world_size - remainder) if remainder else 0
 
     def _all_gather(self, param_list, async_op=False, hierarchy=None):
         handles = []
@@ -267,7 +287,8 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
         if not async_op:
             ret_value = self._allgather_params(all_gather_list, hierarchy=hierarchy)
-            param.ds_status = ZeroParamStatus.AVAILABLE
+            for param in all_gather_list:
+                param.ds_status = ZeroParamStatus.AVAILABLE
             return ret_value
 
         return handles
@@ -289,7 +310,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         global reuse_buffers
         #print_rank_0(f"Param id {param.ds_id} status is {param.ds_status}")
         if param.ds_status is ZeroParamStatus.AVAILABLE:
-            print_rank_0(f"reuse buffers {reuse_buffers}", force=True)
+            print_rank_0(
+                f"Partitioning param id {param.ds_id} reuse buffers {reuse_buffers}",
+                force=True)
             if reuse_buffers and (param.ds_numel == 16384 * 16384 * 4
                                   or param.ds_numel == 16384 * 16384):
                 buffer = param.data
@@ -300,11 +323,12 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
             if param.ds_tensor is not None:
                 param.data = param.ds_tensor.data
+                print_rank_0(
+                    f"Partitioning available param {param.ds_id} type {param.dtype} shape {param.shape}"
+                )
                 return
 
-            tensor_size = param.ds_numel
-            if tensor_size % self.world_size != 0:
-                tensor_size += (self.world_size - (param.ds_numel % self.world_size))
+            tensor_size = self._aligned_size(param)
             partition_size = tensor_size // self.world_size
 
             start = partition_size * self.rank
@@ -335,7 +359,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             param.ds_tensor = partitioned_tensor
             param.data = param.ds_tensor.data
 
-            #print(f"ID {param.ds_id} partitioned and contains {param.data.shape}")
+            print_rank_0(
+                f"ID {param.ds_id} partitioned type {param.dtype} dev {param.device} shape {param.shape}"
+            )
 
     def _param_status(self, param):
         if param.ds_tensor is not None:
@@ -352,6 +378,8 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #self._param_status(param)
         partition_size = param.data.numel()
         tensor_size = partition_size * self.world_size
+        aligned_param_size = self._aligned_size(param)
+        assert tensor_size == aligned_param_size, f'param id {param.ds_id} aligned size {aligned_param_size} does not match tensor size {tensor_size}'
 
         global empty_buffers, reuse_buffers
 
@@ -374,7 +402,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             f"{'--'* hierarchy}---- Before allocating Allgather param with id {param.ds_id} and status {param.ds_status} Partition Size {partition_size} and data shape {param.ds_shape}"
         )
         if flat_tensor is None:
-            flat_tensor = torch.zeros(param.ds_shape,
+            flat_tensor = torch.zeros(aligned_param_size,
                                       dtype=param.dtype,
                                       device=param.device).view(-1)
             torch.cuda.synchronize()
@@ -382,15 +410,14 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         print_rank_0(
             f"{'--'* hierarchy}----Allgather param with id {param.ds_id} and status {param.ds_status} Partition Size {partition_size} and data shape {param.ds_shape}"
         )
-        if not flat_tensor.numel() > 100000:
-            replicated_tensor = flat_tensor.narrow(0,
-                                                   0,
-                                                   param.ds_numel).view(param.ds_shape)
-            param.data = replicated_tensor.data
-            return None
+        #        if not flat_tensor.numel() > 100000:
+        #            replicated_tensor = flat_tensor.narrow(0,
+        #                                                   0,
+        #                                                   param.ds_numel).view(param.ds_shape)
+        #            param.data = replicated_tensor.data
+        #            return None
         partitions = []
         for i in range(self.world_size):
-
             partitions.append(flat_tensor.narrow(0, partition_size * i, partition_size))
 
             if i == torch.distributed.get_rank(group=self.ds_process_group):
@@ -413,12 +440,12 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #     replicated_tensor = torch.empty(param.ds_shape, dtype=param.dtype, device=param.device)
         #     param.data = replicated_tensor.data
         # return None
+
         partition_size = sum([param.data.numel() for param in param_list])
         tensor_size = partition_size * self.world_size
         flat_tensor = torch.empty(tensor_size,
                                   dtype=param_list[0].dtype,
                                   device=param_list[0].device)
-
         partitions = []
         for i in range(self.world_size):
             start = partition_size * i
@@ -456,9 +483,8 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
                 if param_start < param_size:
                     numel_to_copy = min(param_size - param_start, param_partition_size)
-                    part_to_copy = partitions[i].narrow(0,
-                                                        param_offset,
-                                                        param_partition_size)
+
+                    part_to_copy = partitions[i].narrow(0, param_offset, numel_to_copy)
 
                     replicated_tensor.view(-1).narrow(0,
                                                       param_start,

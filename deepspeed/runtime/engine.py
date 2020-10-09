@@ -189,7 +189,7 @@ class DeepSpeedEngine(Module):
                     logger.info("Will convert {} to sparse (csr) "
                                 "tensor during training".format(name))
 
-        self.save_non_zero_checkpoint = False
+        self.save_model_checkpoint = False
         self.save_zero_checkpoint = False
         self._configure_checkpointing(dist_init_required)
 
@@ -320,6 +320,9 @@ class DeepSpeedEngine(Module):
     def zero_optimization_partition_gradients(self):
         return self.zero_optimization_stage() >= ZERO_OPTIMIZATION_GRADIENTS
 
+    def zero_optimization_partition_weights(self):
+        return self.zero_optimization_stage() >= ZERO_OPTIMIZATION_WEIGHTS
+
     def zero_contiguous_gradients(self):
         return self._config.zero_config.contiguous_gradients
 
@@ -407,7 +410,8 @@ class DeepSpeedEngine(Module):
             dp_rank = self.mpu.get_data_parallel_rank()
 
         # only the first data parallel process needs to store the model checkpoint
-        self.save_non_zero_checkpoint = (dp_rank == 0)
+        self.save_model_checkpoint = (
+            dp_rank == 0) or self.zero_optimization_partition_weights()
 
         if self.zero_optimization():
             param_rank = torch.distributed.get_rank(
@@ -562,7 +566,6 @@ class DeepSpeedEngine(Module):
         else:
             self.optimizer = basic_optimizer
         logger.info('DeepSpeed Final Optimizer = {}'.format(self.optimizer))
-        logger.info('DeepSpeed Final Optimizer = {}'.format(self.optimizer.state_dict()))
 
     def _configure_basic_optimizer(self, model_parameters):
         optimizer_parameters = self.optimizer_params()
@@ -780,7 +783,6 @@ class DeepSpeedEngine(Module):
             *inputs: Variable length input list
             **kwargs: variable length keyword arguments
         """
-
         if self.wall_clock_breakdown():
             self.timers('forward_microstep').start()
             self.timers('forward').start()
@@ -1213,9 +1215,18 @@ class DeepSpeedEngine(Module):
 
     def _get_ckpt_name(self, checkpoints_path, tag):
         mp_rank = 0 if self.mpu is None else self.mpu.get_model_parallel_rank()
-        ckpt_name = os.path.join(checkpoints_path,
-                                 str(tag),
-                                 'mp_rank_{:02d}'.format(mp_rank) + '_model_states.pt')
+        if self.zero_optimization_partition_weights():
+            filename = 'zero_pp_rank_{}'.format(
+                torch.distributed.get_rank(group=self.optimizer.dp_process_group))
+            ckpt_name = os.path.join(
+                checkpoints_path,
+                str(tag),
+                filename + '_mp_rank_{:02d}'.format(mp_rank) + '_model_states.pt')
+        else:
+            ckpt_name = os.path.join(
+                checkpoints_path,
+                str(tag),
+                'mp_rank_{:02d}'.format(mp_rank) + '_model_states.pt')
         return ckpt_name
 
     def load_checkpoint(self,
@@ -1383,16 +1394,22 @@ class DeepSpeedEngine(Module):
             client_state: Optional. State dictionary used for saving required training states in the client code.
         """
 
+        if self.zero_optimization_partition_weights():
+            # Prepare for state_dict() by ensuring all parameters are partitioned
+            self.optimizer.save_checkpoint_prologue()
+
         # This is to make sure the checkpoint names are created without collision
         # There seems to be issue creating them in parallel
-
-        if self.save_non_zero_checkpoint:
+        if self.save_model_checkpoint:
             self._create_checkpoint_file(save_dir, tag, False)
             self._save_checkpoint(save_dir, tag, client_state=client_state)
 
         if self.save_zero_checkpoint:
             self._create_zero_checkpoint_files(save_dir, tag)
             self._save_zero_checkpoint(save_dir, tag)
+
+        if self.zero_optimization_partition_weights():
+            self.optimizer.save_checkpoint_epilogue()
 
         return True
 
