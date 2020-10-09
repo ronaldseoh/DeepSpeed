@@ -31,7 +31,10 @@ struct deepspeed_aio_handle_t {
 
     int write(const torch::Tensor& buffer, const char* filename, const bool validate);
 
-    int pread(torch::Tensor& buffer, const char* filename, const bool validate, const bool async);
+    int pread(const torch::Tensor& buffer,
+              const char* filename,
+              const bool validate,
+              const bool async);
 
     int pwrite(const torch::Tensor& buffer,
                const char* filename,

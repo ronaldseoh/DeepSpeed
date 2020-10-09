@@ -5,16 +5,21 @@
 
 struct io_op_desc_t {
     const bool _read_op;
-    const char* _buffer;
+    torch::Tensor _buffer;
     int _fd;
     const std::string _filename;
     const long long int _num_bytes;
+    torch::Tensor _cpu_buffer;
+    torch::Tensor _contiguous_buffer;
 
     io_op_desc_t(const bool read_op,
                  const torch::Tensor& buffer,
                  const int fd,
                  const char* filename,
                  const long long int num_bytes);
+
+    char* data_ptr() const;
+    void fini();
 };
 
 struct thread_sync_t {

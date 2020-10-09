@@ -160,12 +160,14 @@ int deepspeed_aio_handle_t::wait(const bool validate)
 
     _wait_for_aio_work();
 
+    _scheduled_op->fini();
+
     close(_scheduled_op->_fd);
 
     if (validate) {
         validate_aio_operation(_scheduled_op->_read_op,
                                _scheduled_op->_filename.c_str(),
-                               (char*)_scheduled_op->_buffer,
+                               _scheduled_op->data_ptr(),
                                _scheduled_op->_num_bytes);
     }
 
@@ -187,7 +189,7 @@ bool deepspeed_aio_handle_t::_is_valid_parallel_aio_op(const bool read_op,
     return true;
 }
 
-int deepspeed_aio_handle_t::pread(torch::Tensor& buffer,
+int deepspeed_aio_handle_t::pread(const torch::Tensor& buffer,
                                   const char* filename,
                                   const bool validate,
                                   const bool async)
@@ -206,6 +208,7 @@ int deepspeed_aio_handle_t::pread(torch::Tensor& buffer,
 
     const auto fd = open_file(filename, true);
     if (fd == -1) { return -1; }
+
     _scheduled_op =
         std::make_shared<io_op_desc_t>(true, buffer, fd, filename, (num_file_bytes / _num_threads));
 
@@ -231,6 +234,7 @@ int deepspeed_aio_handle_t::pwrite(const torch::Tensor& buffer,
     const auto fd = open_file(filename, false);
     if (fd == -1) { return -1; }
 
+    auto contig_buffer = buffer.contiguous();
     _scheduled_op = std::make_shared<io_op_desc_t>(
         false, buffer, fd, filename, (num_write_bytes / _num_threads));
 

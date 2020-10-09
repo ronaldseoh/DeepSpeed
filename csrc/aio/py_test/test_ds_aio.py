@@ -59,6 +59,8 @@ def parse_arguments():
                         default=None,
                         help='Per iop parallelism')
 
+    parser.add_argument('--gpu', action='store_true', help='Use GPU memory')
+
     args = parser.parse_args()
     print(f'args = {args}')
     return args

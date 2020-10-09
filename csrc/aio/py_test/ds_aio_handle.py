@@ -12,7 +12,10 @@ def pre_handle(args, tid, read_op):
     file = args.read_file if read_op else f'{args.write_file}.{tid}'
 
     task_log(tid, f'Allocate tensor of size {num_bytes} bytes')
-    buffer = torch.empty(num_bytes, dtype=torch.uint8, device='cpu').pin_memory()
+    if args.gpu:
+        buffer = torch.empty(num_bytes, dtype=torch.uint8, device='cuda')
+    else:
+        buffer = torch.empty(num_bytes, dtype=torch.uint8, device='cpu').pin_memory()
     task_log(
         tid,
         f'{io_string} file {file} of size {num_bytes} bytes from buffer on device {buffer.device}'

@@ -33,9 +33,12 @@ def _do_ref_write(tmpdir):
     return ref_file, ref_buffer
 
 
-def _get_test_file_and_buffer(tmpdir, ref_buffer):
+def _get_test_file_and_buffer(tmpdir, ref_buffer, cuda_device):
     test_file = os.path.join(tmpdir, '_aio_write_random.pt')
-    test_buffer = torch.ByteTensor(list(ref_buffer)).pin_memory()
+    if cuda_device:
+        test_buffer = torch.cuda.ByteTensor(list(ref_buffer))
+    else:
+        test_buffer = torch.ByteTensor(list(ref_buffer)).pin_memory()
 
     return test_file, test_buffer
 
@@ -74,21 +77,35 @@ def test_parallel_read(tmpdir, single_submit, overlap_events):
     assert ref_buffer == aio_buffer.tolist()
 
 
-@pytest.mark.parametrize('single_submit, overlap_events',
+@pytest.mark.parametrize('single_submit, overlap_events, cuda_device',
                          [(False,
+                           False,
                            False),
                           (False,
-                           True),
-                          (True,
+                           True,
                            False),
                           (True,
+                           False,
+                           False),
+                          (True,
+                           True,
+                           False),
+                          (False,
+                           False,
+                           True),
+                          (True,
+                           True,
                            True)])
-def test_async_read(tmpdir, single_submit, overlap_events):
+def test_async_read(tmpdir, single_submit, overlap_events, cuda_device):
     _skip_if_no_aio()
 
     ref_file, _ = _do_ref_write(tmpdir)
 
-    aio_buffer = torch.empty(IO_SIZE, dtype=torch.uint8, device='cpu').pin_memory()
+    if cuda_device:
+        aio_buffer = torch.empty(IO_SIZE, dtype=torch.uint8, device='cuda')
+    else:
+        aio_buffer = torch.empty(IO_SIZE, dtype=torch.uint8, device='cpu').pin_memory()
+
     h = aio_handle(BLOCK_SIZE, QUEUE_DEPTH, single_submit, overlap_events, IO_PARALLEL)
     _validate_handle_state(h, single_submit, overlap_events)
 
@@ -117,7 +134,7 @@ def test_parallel_write(tmpdir, single_submit, overlap_events):
 
     ref_file, ref_buffer = _do_ref_write(tmpdir)
 
-    aio_file, aio_buffer = _get_test_file_and_buffer(tmpdir, ref_buffer)
+    aio_file, aio_buffer = _get_test_file_and_buffer(tmpdir, ref_buffer, False)
 
     h = aio_handle(BLOCK_SIZE, QUEUE_DEPTH, single_submit, overlap_events, IO_PARALLEL)
     _validate_handle_state(h, single_submit, overlap_events)
@@ -131,21 +148,31 @@ def test_parallel_write(tmpdir, single_submit, overlap_events):
     assert filecmp.cmp(ref_file, aio_file, shallow=False)
 
 
-@pytest.mark.parametrize('single_submit, overlap_events',
+@pytest.mark.parametrize('single_submit, overlap_events, cuda_device',
                          [(False,
+                           False,
                            False),
                           (False,
-                           True),
-                          (True,
+                           True,
                            False),
                           (True,
+                           False,
+                           False),
+                          (True,
+                           True,
+                           False),
+                          (False,
+                           False,
+                           True),
+                          (True,
+                           True,
                            True)])
-def test_async_write(tmpdir, single_submit, overlap_events):
+def test_async_write(tmpdir, single_submit, overlap_events, cuda_device):
     _skip_if_no_aio()
 
     ref_file, ref_buffer = _do_ref_write(tmpdir)
 
-    aio_file, aio_buffer = _get_test_file_and_buffer(tmpdir, ref_buffer)
+    aio_file, aio_buffer = _get_test_file_and_buffer(tmpdir, ref_buffer, cuda_device)
 
     h = aio_handle(BLOCK_SIZE, QUEUE_DEPTH, single_submit, overlap_events, IO_PARALLEL)
     _validate_handle_state(h, single_submit, overlap_events)

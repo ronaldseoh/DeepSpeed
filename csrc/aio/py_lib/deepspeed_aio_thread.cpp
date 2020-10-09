@@ -7,12 +7,17 @@ io_op_desc_t::io_op_desc_t(const bool read_op,
                            const int fd,
                            const char* filename,
                            const long long int num_bytes)
-    : _read_op(read_op),
-      _buffer((char*)buffer.data_ptr()),
-      _fd(fd),
-      _filename(filename),
-      _num_bytes(num_bytes)
+    : _read_op(read_op), _buffer(buffer), _fd(fd), _filename(filename), _num_bytes(num_bytes)
 {
+    _cpu_buffer = _buffer.is_cuda() ? _buffer.to(torch::kCPU).pin_memory() : _buffer;
+    _contiguous_buffer = _cpu_buffer.contiguous();
+}
+
+char* io_op_desc_t::data_ptr() const { return (char*)_contiguous_buffer.data_ptr(); }
+
+void io_op_desc_t::fini()
+{
+    if (_read_op && _buffer.is_cuda()) { _buffer.copy_(_cpu_buffer.to(torch::kCUDA)); }
 }
 
 deepspeed_aio_thread_t::deepspeed_aio_thread_t(const int tid, deepspeed_aio_config_t& aio_config)
@@ -45,7 +50,7 @@ void deepspeed_aio_thread_t::run()
             const auto base_offset = next_io_op->_num_bytes * _tid;
 
             std::unique_ptr<io_xfer_ctxt> xfer_ctxt(new io_xfer_ctxt(
-                next_io_op->_fd, base_offset, next_io_op->_num_bytes, next_io_op->_buffer));
+                next_io_op->_fd, base_offset, next_io_op->_num_bytes, next_io_op->data_ptr()));
 
             if (_aio_config._overlap_events) {
                 do_aio_operation_overlap(
