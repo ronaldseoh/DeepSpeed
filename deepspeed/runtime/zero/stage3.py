@@ -626,8 +626,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             self.fp16_groups_flat.append(
                 flatten_dense_tensors_aligned(
                     self.fp16_groups[i],
-                    dist.get_world_size(group=self.dp_process_group),
-                    self.dp_process_group).cuda(torch.cuda.current_device()))
+                    dist.get_world_size(group=self.dp_process_group)
+                ).cuda(torch.cuda.current_device()))
             see_memory_usage(f"After flattening and moving param group {i} to GPU", force=False)
 
             # set model fp16 weight to slices of flattened buffer
