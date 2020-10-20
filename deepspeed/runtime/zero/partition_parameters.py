@@ -6,6 +6,7 @@ from deepspeed.runtime.zero.linear import LinearModuleForZeroStage3, LinearFunct
 from deepspeed.runtime.utils import see_memory_usage
 from deepspeed.utils import log_dist
 
+param_count = 0
 
 def print_rank_0(message, debug=False, force=False):
     if torch.distributed.get_rank() == 0 and (debug or force):
@@ -41,12 +42,12 @@ _orig_torch_empty = torch.empty
 
 def empty_cuda_tensor(*size, **kwargs):
     kwargs['device'] = torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"]))
-    return _orig_torch_empty(*size, **kwargs)
+    return _orig_torch_empty(*size, **kwargs).half()
 
 
 def new_cuda_tensor(cls, *args):
     device = torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"]))
-    return torch.ones((1, 1), device=device).new_empty(*args)
+    return torch.ones((1, 1), device=device).new_empty(*args).half()
 
 
 reuse_buffers = False
@@ -56,9 +57,9 @@ empty_buffers = {}
 #Inserts _post_init_method at the end of init method
 #for all sub classes of torch.nn.Module
 class InsertPostInitMethodToModuleSubClasses(object):
-    def __init__(self, zero_modules=False):
+    def __init__(self, zero_modules=False, dtype=None):
         self.zero_modules = zero_modules
-
+        self.dtype = dtype 
     def __enter__(self):
         # torch.Tensor.__new_original__ = torch.Tensor.__new__
         # torch.old_empty = torch.empty
@@ -165,8 +166,8 @@ class InsertPostInitMethodToModuleSubClasses(object):
 class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
     param_id = 0
 
-    def __init__(self, ds_group=None, zero_modules=False):
-        super(ScatteredParameters, self).__init__(zero_modules=zero_modules)
+    def __init__(self, ds_group=None, zero_modules=False, dtype=None):
+        super(ScatteredParameters, self).__init__(zero_modules=zero_modules, dtype=dtype)
         assert torch.distributed.is_initialized(), "Parameters cannot be scattered without initializing torch.distributed"
         self.ds_process_group = torch.distributed.group.WORLD if ds_group is None else ds_group
         self.rank = torch.distributed.get_rank(group=self.ds_process_group)
@@ -175,15 +176,17 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
     def _post_init_method(self, module):
         #see_memory_usage(f"Before converting parmas in {module.__class__.__name__}", force=True)
         print_rank_0(f'Converting Params in {module.__class__.__name__}', force=True)
-
+        see_memory_usage(f"Before converting and partitioning parmas in {module.__class__.__name__}", force=True)
+        global param_count
         for name, param in module.named_parameters(recurse=False):
+            param_count += param.numel()
             if not hasattr(param, 'ds_id'):
                 self._convert_to_deepspeed_param(param)
                 print_rank_0(
                     f"Partitioning param with ds id {param.ds_id} and shape {param.data.shape}"
                 )
                 param.partition()
-        #see_memory_usage(f"After converting and partitioning parmas in {module.__class__.__name__}", force=True)
+        see_memory_usage(f"Param count {param_count}. After converting and partitioning parmas in {module.__class__.__name__}", force=True)
 
     def _convert_to_deepspeed_param(self, param):
 
@@ -237,7 +240,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             )
             self._reduce_scatter_gradients(param_list)
 
-        def partition_gradients(param_list=None, partition_buffers=None, hierarchy=0):
+        def partition_gradients(param_list=None, partition_buffers=None, hierarchy=0, accumulate=False):
             cls = param
             print_rank_0(
                 f"{'--'*hierarchy}----Partitioning param gradient with id {cls.ds_id}")
@@ -245,7 +248,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                 param_list = [cls]
                 if isinstance(partition_buffers, torch.Tensor):
                     partition_buffers = [partition_buffers]
-            self._partition_gradients(param_list, partition_buffers=partition_buffers)
+            self._partition_gradients(param_list, partition_buffers=partition_buffers, accumulate=accumulate)
 
         def aligned_size():
             return self._aligned_size(param)
@@ -565,14 +568,14 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
         return handle, input_list[rank]
 
-    def _partition_gradients(self, param_list, partition_buffers=None):
+    def _partition_gradients(self, param_list, partition_buffers=None, accumulate=False):
         if partition_buffers is None:
             partition_buffers = [None] * len(param_list)
 
         for param, partition_buffer in zip(param_list, partition_buffers):
-            self._partition_gradient(param, partition_buffer=partition_buffer)
+            self._partition_gradient(param, partition_buffer=partition_buffer, accumulate=accumulate)
 
-    def _partition_gradient(self, param, partition_buffer=None):
+    def _partition_gradient(self, param, partition_buffer=None, accumulate=False):
         #import pdb;pdb.set_trace()
         #param.grad=None
         #param.grad.test()
@@ -581,11 +584,12 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         partition_size = param.ds_tensor.numel()
 
         if partition_buffer is None:
+            assert not accumulate, "No buffer to accumulate to"
             partition_buffer = torch.zeros(partition_size,
                                            dtype=param.dtype,
                                            device=param.device)
         else:
-            assert partition_buffer.numel() == partition_size, "The partition buffer size should match the size of param.ds_tensor"
+            assert partition_buffer.numel() >= partition_size, "The partition buffer size should match the size of param.ds_tensor"
 
         rank = torch.distributed.get_rank(group=self.ds_process_group)
         start = partition_size * rank
@@ -593,12 +597,43 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #print("before partition gradients")
         if start < param.ds_numel:
             elements = min(param.ds_numel - start, partition_size)
-            partition_buffer.view(-1).narrow(
-                0,
-                0,
-                elements).copy_(param.grad.view(-1).narrow(0,
-                                                           start,
-                                                           elements))
+            
+            dest_tensor = partition_buffer.view(-1).narrow(
+                    0,
+                    0,
+                    elements)
+            
+            src_tensor = param.grad.view(-1).narrow(0,
+                                                    start,
+                                                    elements) 
+
+            #just copy the grad partition to the buffer
+            if not accumulate:
+                dest_tensor.copy_(src_tensor)
+            
+            #if source and destinatoin are on same device,
+            #add to the provided buffer
+            elif src_tensor.device == dest_tensor.device:
+                dest_tensor.add_(src_tensor)
+            
+            #if source and destination are on different device, copy first to src
+            #then add and move back to the destination. This seems to run faster 
+            #when src is gpu and dest is cpu
+            #adding directly to cpu is very slow
+            else:
+                acc_tensor = torch.empty(src_tensor.numel(), dtype=param.dtype, device=param.device)
+                acc_tensor.copy_(dest_tensor)
+                acc_tensor.add_(src_tensor)
+                dest_tensor.copy_(acc_tensor)
+
+            
+            # partition_buffer.view(-1).narrow(
+            #     0,
+            #     0,
+            #     elements).copy_(param.grad.view(-1).narrow(0,
+            #                                             start,
+            #                                             elements))
+
         #print("after partition gradients")
-        param.grad.data = partition_buffer.data
+        param.grad.data = dest_tensor.data
         see_memory_usage("After partitioning gradients", force=False)

@@ -672,7 +672,7 @@ class DeepSpeedEngine(Module):
                 gradient_accumulation_steps=self.gradient_accumulation_steps())
         elif zero_stage == ZERO_OPTIMIZATION_WEIGHTS:
             print("Initializing ZeRO Stage 3") if dist.get_rank() == 0 else None
-            assert self.gradient_accumulation_steps() == 1, "ZeRO stage 3 does not support gradient accumulation, if you need gradient accumulation please use stage 1"
+            #assert self.gradient_accumulation_steps() == 1, "ZeRO stage 3 does not support gradient accumulation, if you need gradient accumulation please use stage 1"
             optimizer = FP16_DeepSpeedZeroOptimizer_Stage3(
                 self.module,
                 optimizer,
@@ -690,9 +690,12 @@ class DeepSpeedEngine(Module):
                 dp_process_group=self.data_parallel_group,
                 reduce_scatter=self.zero_reduce_scatter(),
                 overlap_comm=self.zero_overlap_comm(),
+                cpu_offload_optimizer_state=self.zero_cpu_offload(),
+                cpu_offload_params=False,
                 mpu=self.mpu,
                 postscale_gradients=self.postscale_gradients(),
-                gradient_predivide_factor=self.gradient_predivide_factor())
+                gradient_predivide_factor=self.gradient_predivide_factor(),
+                gradient_accumulation_steps=self.gradient_accumulation_steps())
 
         else:
             raise NotImplementedError("ZeRO stage {} not implemented".format(zero_stage))
