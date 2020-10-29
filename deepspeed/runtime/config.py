@@ -27,6 +27,32 @@ DEEPSPEED_OPTIMIZERS = [
 ]
 
 
+def get_aio_config(param_dict):
+    if AIO in param_dict.keys():
+        aio_dict = param_dict[AIO]
+        return {
+            AIO_BLOCK_SIZE: get_scalar_param(aio_dict, AIO_BLOCK_SIZE, AIO_BLOCK_SIZE_DEFAULT),
+            AIO_QUEUE_DEPTH: get_scalar_param(aio_dict, AIO_QUEUE_DEPTH, AIO_QUEUE_DEPTH_DEFAULT),
+            AIO_THREAD_COUNT: get_scalar_param(aio_dict, AIO_THREAD_COUNT, AIO_THREAD_COUNT_DEFAULT),
+            AIO_SINGLE_SUBMIT: get_scalar_param(aio_dict, AIO_SINGLE_SUBMIT, AIO_SINGLE_SUBMIT_DEFAULT),
+            AIO_OVERLAP_EVENTS: get_scalar_param(aio_dict, AIO_OVERLAP_EVENTS, AIO_OVERLAP_EVENTS_DEFAULT)
+        }
+
+    return None
+
+def get_swap_tensor_config(param_dict):
+    if SWAP_TENSOR in param_dict.keys():
+        swap_dict = param_dict[SWAP_TENSOR]
+        return {
+            SWAP_FOLDER: get_scalar_param(swap_dict, SWAP_FOLDER, SWAP_FOLDER_DEFAULT),
+            SWAP_DEEPSPEED_COPY: get_scalar_param(swap_dict, SWAP_DEEPSPEED_COPY, SWAP_DEEPSPEED_COPY_DEFAULT),
+            SWAP_OPTIMIZER: get_scalar_param(swap_dict, SWAP_OPTIMIZER, SWAP_OPTIMIZER_DEFAULT),
+            SWAP_GRADIENTS: get_scalar_param(swap_dict, SWAP_GRADIENTS, SWAP_GRADIENTS_DEFAULT),
+            SWAP_WEIGHTS: get_scalar_param(swap_dict, SWAP_WEIGHTS, SWAP_WEIGHTS_DEFAULT)
+        }
+
+    return None
+
 def get_amp_enabled(param_dict):
     if AMP in param_dict.keys():
         return get_scalar_param(param_dict[AMP], AMP_ENABLED, AMP_ENABLED_DEFAULT)
@@ -538,6 +564,9 @@ class DeepSpeedConfig(object):
 
         self.sparse_attention = get_sparse_attention(param_dict)
         self.pipeline = get_pipeline_config(param_dict)
+
+        self.aio_config = get_aio_config(param_dict)
+        self.swap_tensor_config = get_swap_tensor_config(param_dict)
 
     def _batch_assertion(self):
 

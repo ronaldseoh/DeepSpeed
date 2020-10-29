@@ -266,6 +266,7 @@ if BUILD_MASK & DS_BUILD_AIO:
         ext_modules.append(
             CppExtension(name='deepspeed.ops.aio.aio_op',
                          sources=[
+                             'csrc/aio/py_lib/deepspeed_py_copy.cpp',
                              'csrc/aio/py_lib/py_ds_aio.cpp',
                              'csrc/aio/py_lib/deepspeed_py_aio.cpp',
                              'csrc/aio/py_lib/deepspeed_py_aio_handle.cpp',
@@ -284,7 +285,12 @@ if BUILD_MASK & DS_BUILD_AIO:
                               '-O0',
                               '-std=c++14',
                               '-shared',
-                              '-fPIC']
+                              '-fPIC',
+                              '-Wno-reorder',
+                              '-march=native',
+                              '-fopenmp',
+                              SIMD_WIDTH
+                              ]
                          },
                          extra_link_args=['-laio'],
                          undef_macros=['NDEBUG']))

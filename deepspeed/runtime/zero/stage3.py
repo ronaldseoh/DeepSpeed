@@ -1,7 +1,8 @@
 '''
-Copyright 2019 The Microsoft DeepSpeed Team
+Copyright 2020 The Microsoft DeepSpeed Team
 '''
 
+import os
 import torch
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 from torch.distributed.distributed_c10d import _get_global_rank
@@ -16,6 +17,11 @@ from deepspeed.runtime.utils import see_memory_usage, is_model_parallel_paramete
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus, ZeroParamType
 from deepspeed.runtime.zero.constants import ZERO_OPTIMIZATION_WEIGHTS
 from deepspeed.ops.adam import DeepSpeedCPUAdam
+from deepspeed.runtime.constants import SWAP_FOLDER, SWAP_OPTIMIZER, SWAP_GRADIENTS, SWAP_WEIGHTS
+from deepspeed.runtime.swap_tensor import OptimizerSwapTensor
+from deepspeed.runtime.constants import AIO_BLOCK_SIZE, AIO_QUEUE_DEPTH, \
+    AIO_THREAD_COUNT, AIO_SINGLE_SUBMIT, AIO_OVERLAP_EVENTS
+from deepspeed.ops.aio import aio_handle
 
 import itertools
 #Toggle this to true to enable correctness test
@@ -518,7 +524,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
                  allreduce_always_fp32=False,
                  postscale_gradients=True,
                  gradient_predivide_factor=1.0,
-                 gradient_accumulation_steps=1):
+                 gradient_accumulation_steps=1,
+                 swap_tensor_config=None,
+                 aio_config=None):
 
         if dist.get_rank() == 0:
             logger.info(f"Reduce bucket size {reduce_bucket_size}")
@@ -545,7 +553,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         if cpu_offload_params:
             assert cpu_offload_optimizer_state, "parameter offload is only available with optimizer state offload"
-        
+
         self.cpu_offload_params = cpu_offload_optimizer_state and cpu_offload_params
 
         self.deepspeed_adam_offload = (self.cpu_offload
@@ -718,7 +726,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         self.grad_position = {}
         self.set_grad_positions()
-                
+
 
         if self.cpu_offload:
             self.accumulated_grads_in_cpu = {}
@@ -733,7 +741,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             self.temp_grad_gpu_buffer = torch.zeros(
                 largest_param_numel,
                 device=torch.cuda.current_device()).half()
-            
+
 
         #stores if a partition has been reduced in this step
         self.is_partition_reduced = {}
@@ -761,8 +769,51 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             self.loss_scaler = LossScaler(scale=static_loss_scale)
             self.cur_iter = 0
 
+        # Tensor swapping
+        if swap_tensor_config and aio_config:
+            swap_folder = os.path.join(swap_tensor_config[SWAP_FOLDER],
+                                       'zero_stage_3',
+                                       f'rank{dist.get_rank()}')
+            self.swap_optimizer = swap_tensor_config[SWAP_OPTIMIZER]
+            self.swap_gradients = swap_tensor_config[SWAP_GRADIENTS]
+            self.swap_weights = swap_tensor_config[SWAP_WEIGHTS]
+
+            self.aio_handle = aio_handle(aio_config[AIO_BLOCK_SIZE],
+                                         aio_config[AIO_QUEUE_DEPTH],
+                                         aio_config[AIO_SINGLE_SUBMIT],
+                                         aio_config[AIO_OVERLAP_EVENTS],
+                                         aio_config[AIO_THREAD_COUNT])
+            if self.swap_optimizer:
+                logger.info(f'Tensor Swapping: Adding optimizer tensors')
+                self.optimizer_swap_tensors = OptimizerSwapTensor(swap_tensor_config,
+                                                                  self.optimizer,
+                                                                  swap_folder,
+                                                                  self.timers)
+
+
+            see_memory_usage(f"zero-stage3-init Before swapping out tensors")
+            self.optimizer_swap_tensors.swap_out(self.aio_handle)
+            see_memory_usage(f"zero-stage3-init After swapping out tensors")
+        else:
+            self.optimizer_swap_tensors = None
+            self.swap_optimizer = False
+            self.swap_gradients = False
+            self.swap_weights = False
+
         if dist.get_rank(group=self.dp_process_group) == 0:
             see_memory_usage(f"After initializing ZeRO optimizer", force=False)
+
+
+    def _get_optimizer_tensors(self):
+        tensor_list = []
+        for group in self.optimizer.param_groups:
+            for p in group['params']:
+                state = self.optimizer.state[p]
+                for key in state.keys():
+                    if torch.is_tensor(state[key]):
+                        tensor_list.append(state[key])
+
+        return tensor_list
 
     def reset_ds_tensor(self):
         for name, param in self.module.named_parameters(recurse=True):
@@ -1279,20 +1330,20 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
                         num_elements)
 
             if self.cpu_offload:
-                    
+
                 param.partition_gradients(partition_buffers=self.temp_grad_gpu_buffer)
-                
+
                 if self.gradient_accumulation_steps > 1:
                     self.async_accumulate_grad_in_cpu_via_gpu(param, grad_tensor)
 
                 if self.is_gradient_accumulation_boundary:
-                    
+
                     self.set_norm_for_param_grad_in_gpu(param)
 
                     self.update_overflow_tracker_for_param_grad(param)
 
-                    fp32_grad_tensor = self.fp32_groups_flat[i].grad.narrow(0, 
-                                                                    dest_offset, 
+                    fp32_grad_tensor = self.fp32_groups_flat[i].grad.narrow(0,
+                                                                    dest_offset,
                                                                     num_elements)
 
                     self.async_inplace_copy_grad_to_fp32_buffer_from_gpu(param, fp32_grad_tensor)
@@ -1308,7 +1359,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         with torch.cuda.stream(self.reduction_stream):
             self.partition_previous_reduced_grads()
-            
+
         params_to_reduce = [param for i, param, param_id in self.params_in_ipg_bucket]
         #print_rank_0(f"Reducing {[(param.ds_id, param.grad) for param in params_to_reduce]}")
         if self.contiguous_gradients:
@@ -1665,13 +1716,24 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
     def reset_cpu_buffers(self):
         self.norm_for_param_grads = {}
         self.local_overflow = False
-    
+
+    def log_timers(self, timer_names):
+        self.timers.log(names=timer_names)
+
+    def start_timers(self, timer_names):
+        for name in timer_names:
+            self.timers(name).start()
+
+    def stop_timers(self, timer_names):
+        for name in timer_names:
+            self.timers(name).stop()
+
     def step(self, closure=None):
         """
         Not supporting closure.
         """
 
-        self.micro_step_id = -1 
+        self.micro_step_id = -1
 
         #if self.cpu_offload:
         #    torch.cuda.current_stream().wait_stream(self.migration_stream)
@@ -1692,6 +1754,19 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         timers = self.timers
 
+        OPTIMIZER_STEP = 'optimizer_step'
+        OPTIMIZER_SWAP_IN = 'optimizer_swap_in'
+        OPTIMIZER_SWAP_OUT = 'optimizer_swap_out'
+        OPTIMIZER_FP16_UPDATE = 'optimizer_fp16_update'
+        OPTIMIZER_FP32_GRADIENT = 'optimizer_fp32_gradient'
+        timer_names = [
+            OPTIMIZER_STEP,
+            OPTIMIZER_SWAP_IN,
+            OPTIMIZER_SWAP_OUT,
+            OPTIMIZER_FP16_UPDATE,
+            OPTIMIZER_FP32_GRADIENT
+        ]
+
         prev_scale = self.loss_scale
         self._update_scale(self.overflow)
         if self.overflow:
@@ -1710,16 +1785,16 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
                 "reducing to {}".format(dist.get_rank(),
                                         prev_scale,
                                         self.loss_scale))
-            timers('optimizer_step').start()
-            timers('optimizer_step').stop()
-            timers('optimizer_allgather').start()
-            timers('optimizer_allgather').stop()
+            self.start_timers(timer_names)
+            self.stop_timers(timer_names)
             return
 
         norm_groups = []
         single_partition_grad_groups = []
         skip = False
         partition_id = dist.get_rank(group=self.dp_process_group)
+
+        self.start_timers([OPTIMIZER_FP32_GRADIENT])
         for i, group in enumerate(self.fp16_groups):
 
             if self.cpu_offload:
@@ -1751,21 +1826,37 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
             single_partition_grad_groups.append(single_grad_partition)
 
+        self.stop_timers([OPTIMIZER_FP32_GRADIENT])
+
         self.unscale_and_clip_grads(single_partition_grad_groups, norm_groups)
 
-        timers('optimizer_step').start()
+        if self.optimizer_swap_tensors:
+            see_memory_usage('pre-step Before swapping in optimizer tensors')
+            self.start_timers([OPTIMIZER_SWAP_IN])
+            self.optimizer_swap_tensors.swap_in(self.aio_handle)
+            self.stop_timers([OPTIMIZER_SWAP_IN])
+            see_memory_usage('pre-step After swapping in optimizer tensors')
+
+        self.start_timers([OPTIMIZER_STEP])
         self.optimizer.step()
-        
-        
+        self.stop_timers([OPTIMIZER_STEP])
+
+        if self.optimizer_swap_tensors:
+            see_memory_usage('post-step Before swapping in optimizer tensors')
+            self.start_timers([OPTIMIZER_SWAP_OUT])
+            self.optimizer_swap_tensors.swap_out(self.aio_handle)
+            self.stop_timers([OPTIMIZER_SWAP_OUT])
+            see_memory_usage('post-step After swapping in optimizer tensors')
+
         #get rid of the fp32 gradients. Not needed anymore
         if not self.cpu_offload:
             for group in self.fp32_groups_flat:
                 group.grad = None
 
-
+        self.start_timers([OPTIMIZER_FP16_UPDATE])
         for fp16_partitions, fp32_partition in zip(self.fp16_groups_flat, self.fp32_groups_flat):
             fp16_partitions.data.copy_(fp32_partition.data)
-        timers('optimizer_step').stop()
+        self.stop_timers([OPTIMIZER_FP16_UPDATE])
 
         if self.cpu_offload:
             self.reset_cpu_buffers()
@@ -1780,6 +1871,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         #Gathering persisting parameters
         self.persistent_parameters[0].all_gather(self.persistent_parameters)
+
+        self.log_timers(timer_names)
 
         see_memory_usage('After zero_optimizer step', force=False)
         print_rank_0(f"------------------Finishing Step-----------------------")

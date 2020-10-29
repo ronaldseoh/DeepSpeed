@@ -291,3 +291,50 @@ TENSORBOARD_OUTPUT_PATH_DEFAULT = ""
 # Tensorboard job name
 TENSORBOARD_JOB_NAME = "job_name"
 TENSORBOARD_JOB_NAME_DEFAULT = "DeepSpeedJobName"
+
+#########################################
+# TENSOR SWAPPING
+#########################################
+SWAP_TENSOR_FORMAT = '''
+"swap_tensor": {
+  "folder": "/local_nvme",
+  "optimizer": false,
+  "gradients": false,
+  "weights": false
+}
+'''
+SWAP_TENSOR = "swap_tensor"
+SWAP_FOLDER = "folder"
+SWAP_DEEPSPEED_COPY = "deepspeed_copy"
+SWAP_DEEPSPEED_COPY_DEFAULT = False
+SWAP_FOLDER_DEFAULT = None
+SWAP_OPTIMIZER = "optimizer"
+SWAP_OPTIMIZER_DEFAULT = False
+SWAP_GRADIENTS = "gradients"
+SWAP_GRADIENTS_DEFAULT = False
+SWAP_WEIGHTS = "weights"
+SWAP_WEIGHTS_DEFAULT = False
+
+#########################################
+# AIO
+#########################################
+AIO_FORMAT = '''
+"aio": {
+  "block_size": 1048576,
+  "queue_depth": 8,
+  "thread_count": 1,
+  "single_submit": false,
+  "overlap_events": true
+}
+'''
+AIO = "aio"
+AIO_BLOCK_SIZE = "block_size"
+AIO_BLOCK_SIZE_DEFAULT = 1048576
+AIO_QUEUE_DEPTH = "queue_depth"
+AIO_QUEUE_DEPTH_DEFAULT = 8
+AIO_THREAD_COUNT = "thread_count"
+AIO_THREAD_COUNT_DEFAULT = 1
+AIO_SINGLE_SUBMIT = "single_submit"
+AIO_SINGLE_SUBMIT_DEFAULT = False
+AIO_OVERLAP_EVENTS = "overlap_events"
+AIO_OVERLAP_EVENTS_DEFAULT = True

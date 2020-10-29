@@ -341,9 +341,6 @@ class DeepSpeedEngine(Module):
     def zero_param_persistence_threshold(self):
         return self._config.zero_config.param_persistence_threshold
 
-    def allgather_size(self):
-        return self._config.allgather_size
-
     def fp16_enabled(self):
         return self._config.fp16_enabled
 
@@ -388,6 +385,12 @@ class DeepSpeedEngine(Module):
 
     def dynamic_loss_scale_args(self):
         return self._config.dynamic_loss_scale_args
+
+    def swap_tensor_config(self):
+        return self._config.swap_tensor_config
+
+    def aio_config(self):
+        return self._config.aio_config
 
     def _configure_lr_scheduler(self, client_lr_scheduler):
         # First check for scheduler in json configuration
@@ -695,7 +698,9 @@ class DeepSpeedEngine(Module):
                 mpu=self.mpu,
                 postscale_gradients=self.postscale_gradients(),
                 gradient_predivide_factor=self.gradient_predivide_factor(),
-                gradient_accumulation_steps=self.gradient_accumulation_steps())
+                gradient_accumulation_steps=self.gradient_accumulation_steps(),
+                swap_tensor_config=self.swap_tensor_config(),
+                aio_config=self.aio_config())
 
         else:
             raise NotImplementedError("ZeRO stage {} not implemented".format(zero_stage))

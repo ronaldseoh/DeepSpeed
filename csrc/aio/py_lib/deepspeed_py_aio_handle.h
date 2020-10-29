@@ -2,7 +2,8 @@
 #include <memory>
 #include "deepspeed_aio_thread.h"
 
-struct deepspeed_aio_handle_t {
+struct deepspeed_aio_handle_t
+{
     std::unique_ptr<struct aio_context> _aio_ctxt;
     const bool _single_submit;
     const bool _overlap_events;
@@ -27,27 +28,27 @@ struct deepspeed_aio_handle_t {
     const bool get_overlap_events() const;
     const int get_thread_count() const;
 
-    int read(torch::Tensor& buffer, const char* filename, const bool validate);
+    int read(torch::Tensor &buffer, const char *filename, const bool validate);
 
-    int write(const torch::Tensor& buffer, const char* filename, const bool validate);
+    int write(const torch::Tensor &buffer, const char *filename, const bool validate);
 
-    int pread(const torch::Tensor& buffer,
-              const char* filename,
+    int pread(const torch::Tensor &buffer,
+              const char *filename,
               const bool validate,
               const bool async);
 
-    int pwrite(const torch::Tensor& buffer,
-               const char* filename,
+    int pwrite(const torch::Tensor &buffer,
+               const char *filename,
                const bool validate,
                const bool async);
 
-    int sync_pread(torch::Tensor& buffer, const char* filename);
+    int sync_pread(torch::Tensor &buffer, const char *filename);
 
-    int sync_pwrite(const torch::Tensor& buffer, const char* filename);
+    int sync_pwrite(const torch::Tensor &buffer, const char *filename);
 
-    int async_pread(torch::Tensor& buffer, const char* filename);
+    int async_pread(torch::Tensor &buffer, const char *filename);
 
-    int async_pwrite(const torch::Tensor& buffer, const char* filename);
+    int async_pwrite(const torch::Tensor &buffer, const char *filename);
 
     int wait();
 

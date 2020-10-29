@@ -3,16 +3,16 @@
 #include <stdlib.h>
 #include <torch/extension.h>
 
-int deepspeed_py_aio_write(const torch::Tensor& buffer,
-                           const char* filename,
+int deepspeed_py_aio_write(const torch::Tensor &buffer,
+                           const char *filename,
                            const int block_size,
                            const int queue_depth,
                            const bool single_submit,
                            const bool overlap_events,
                            const bool validate);
 
-int deepspeed_py_aio_read(torch::Tensor& buffer,
-                          const char* filename,
+int deepspeed_py_aio_read(torch::Tensor &buffer,
+                          const char *filename,
                           const int block_size,
                           const int queue_depth,
                           const bool single_submit,

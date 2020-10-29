@@ -59,7 +59,7 @@ empty_buffers = {}
 class InsertPostInitMethodToModuleSubClasses(object):
     def __init__(self, zero_modules=False, dtype=None):
         self.zero_modules = zero_modules
-        self.dtype = dtype 
+        self.dtype = dtype
     def __enter__(self):
         # torch.Tensor.__new_original__ = torch.Tensor.__new__
         # torch.old_empty = torch.empty
@@ -69,12 +69,12 @@ class InsertPostInitMethodToModuleSubClasses(object):
         def partition_after(f):
             def wrapper(module, *args, **kwargs):
                 print_rank_0(f'Before initializing {module.__class__.__name__}',
-                             force=True)
+                             force=False)
                 f(module, *args, **kwargs)
                 self._post_init_method(module)
                 print_rank_0(
                     f'After initializing followed by post init for {module.__class__.__name__}',
-                    force=True)
+                    force=False)
 
             return wrapper
 
@@ -174,9 +174,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         self.world_size = torch.distributed.get_world_size(group=self.ds_process_group)
 
     def _post_init_method(self, module):
-        #see_memory_usage(f"Before converting parmas in {module.__class__.__name__}", force=True)
-        print_rank_0(f'Converting Params in {module.__class__.__name__}', force=True)
-        see_memory_usage(f"Before converting and partitioning parmas in {module.__class__.__name__}", force=True)
+        #see_memory_usage(f"Before converting parmas in {module.__class__.__name__}", force=False)
+        print_rank_0(f'Converting Params in {module.__class__.__name__}', force=False)
+        see_memory_usage(f"Before converting and partitioning parmas in {module.__class__.__name__}", force=False)
         global param_count
         for name, param in module.named_parameters(recurse=False):
             param_count += param.numel()
@@ -186,7 +186,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                     f"Partitioning param with ds id {param.ds_id} and shape {param.data.shape}"
                 )
                 param.partition()
-        see_memory_usage(f"Param count {param_count}. After converting and partitioning parmas in {module.__class__.__name__}", force=True)
+        see_memory_usage(f"Param count {param_count}. After converting and partitioning parmas in {module.__class__.__name__}", force=False)
 
     def _convert_to_deepspeed_param(self, param):
 
@@ -322,7 +322,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                 buffer = param.data
                 print_rank_0(
                     "Returning buffer for param {param.ds_id} with numel {param.ds_numel} to empty buffers",
-                    force=True)
+                    force=False)
                 empty_buffers[id(buffer)] = buffer
 
             if param.ds_tensor is not None:
@@ -397,7 +397,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                     buffer_key = key
                     print_rank_0(
                         f"Buffer reused for allgather of param {param.ds_id} with {param.ds_numel} elements",
-                        force=True)
+                        force=False)
         if buffer_key:
             empty_buffers.pop(buffer_key)
             assert buffer_key not in empty_buffers, "Empty buffers contains the tensor after removing"
@@ -597,27 +597,27 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #print("before partition gradients")
         if start < param.ds_numel:
             elements = min(param.ds_numel - start, partition_size)
-            
+
             dest_tensor = partition_buffer.view(-1).narrow(
                     0,
                     0,
                     elements)
-            
+
             src_tensor = param.grad.view(-1).narrow(0,
                                                     start,
-                                                    elements) 
+                                                    elements)
 
             #just copy the grad partition to the buffer
             if not accumulate:
                 dest_tensor.copy_(src_tensor)
-            
+
             #if source and destinatoin are on same device,
             #add to the provided buffer
             elif src_tensor.device == dest_tensor.device:
                 dest_tensor.add_(src_tensor)
-            
+
             #if source and destination are on different device, copy first to src
-            #then add and move back to the destination. This seems to run faster 
+            #then add and move back to the destination. This seems to run faster
             #when src is gpu and dest is cpu
             #adding directly to cpu is very slow
             else:
@@ -626,7 +626,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                 acc_tensor.add_(src_tensor)
                 dest_tensor.copy_(acc_tensor)
 
-            
+
             # partition_buffer.view(-1).narrow(
             #     0,
             #     0,
