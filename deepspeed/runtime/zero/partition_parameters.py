@@ -166,12 +166,20 @@ class InsertPostInitMethodToModuleSubClasses(object):
 class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
     param_id = 0
 
-    def __init__(self, ds_group=None, zero_modules=False, dtype=None):
+    def __init__(self, ds_group=None, zero_modules=False, dtype=None, remote_device=None):
         super(ScatteredParameters, self).__init__(zero_modules=zero_modules, dtype=dtype)
         assert torch.distributed.is_initialized(), "Parameters cannot be scattered without initializing torch.distributed"
         self.ds_process_group = torch.distributed.group.WORLD if ds_group is None else ds_group
         self.rank = torch.distributed.get_rank(group=self.ds_process_group)
         self.world_size = torch.distributed.get_world_size(group=self.ds_process_group)
+        
+        #Local device is the device where the parameters are consumed
+        #It is the device where parameters are fully instantiated using allgather
+        self.local_device = torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"]))
+
+        #Remote device is the device where parameter partiitons are stored
+        #It can be same as local_device or it could be CPU or NVME.
+        self.remote_device = self.local_device if remote_device is None else remote_device
 
     def _post_init_method(self, module):
         #see_memory_usage(f"Before converting parmas in {module.__class__.__name__}", force=False)
@@ -303,9 +311,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             #self._param_status(param)
             self._partition_param(param)
             param.ds_status = ZeroParamStatus.NOT_AVAILABLE
-            if param.ds_tensor is not None:
-                assert id(param.data) == id(param.ds_tensor.data), \
-                "After the parameters are initially partitioned, make sure we are not recreating the partition."
+            #if param.ds_tensor is not None:
+            #    assert id(param.data) == id(param.ds_tensor.data), \
+            #    "After the parameters are initially partitioned, make sure we are not recreating the partition."
             #print_rank_0(f"After Partitioning Param {param.ds_id}")
             #self._param_status(param)
 
@@ -326,10 +334,14 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                 empty_buffers[id(buffer)] = buffer
 
             if param.ds_tensor is not None:
-                param.data = param.ds_tensor.data
-                print_rank_0(
-                    f"Partitioning available param {param.ds_id} type {param.dtype} shape {param.shape}"
-                )
+                #param.data = param.ds_tensor.data
+                
+                #param.data does not store anything meaningful in partitioned state
+                param.data = torch.ones(1).half().to(param.device)
+                
+                # print_rank_0(
+                #     f"Partitioning available param {param.ds_id} type {param.dtype} shape {param.shape}"
+                # )
                 return
 
             tensor_size = self._aligned_size(param)
@@ -344,11 +356,12 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                 partitioned_tensor = one_dim_param.narrow(
                     0,
                     start,
-                    partition_size).clone().detach()
+                    partition_size).clone().detach().to(self.remote_device)
+
             else:
                 partitioned_tensor = torch.zeros(partition_size,
                                                  dtype=param.dtype,
-                                                 device=param.device)
+                                                 device=self.remote_device )
 
                 if start < param.ds_numel:
                     elements_to_copy = param.ds_numel - start
@@ -360,8 +373,16 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                                                       start,
                                                       elements_to_copy))
 
+            print(f"Remote device {self.remote_device}")
+            if self.remote_device == 'cpu':
+                partitioned_tensor = partitioned_tensor.pin_memory()
+
             param.ds_tensor = partitioned_tensor
-            param.data = param.ds_tensor.data
+            
+            #param.data = param.ds_tensor.data
+
+            #param.data does not store anything meaningful in partitioned state
+            param.data = torch.ones(1).half().to(param.device)
 
             print_rank_0(
                 f"ID {param.ds_id} partitioned type {param.dtype} dev {param.device} shape {param.shape}"
@@ -380,7 +401,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
     def _allgather_param(self, param, async_op=False, hierarchy=0):
 
         #self._param_status(param)
-        partition_size = param.data.numel()
+        #partition_size = param.data.numel()
+        partition_size = param.ds_tensor.numel()
+        
         tensor_size = partition_size * self.world_size
         aligned_param_size = self._aligned_size(param)
         assert tensor_size == aligned_param_size, f'param id {param.ds_id} aligned size {aligned_param_size} does not match tensor size {tensor_size}'
@@ -425,7 +448,8 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             partitions.append(flat_tensor.narrow(0, partition_size * i, partition_size))
 
             if i == torch.distributed.get_rank(group=self.ds_process_group):
-                partitions[i].copy_(param.data)
+                #partitions[i].copy_(param.data)
+                partitions[i].copy_(param.ds_tensor)
 
         handle = torch.distributed.all_gather(partitions,
                                               partitions[self.rank],
@@ -445,11 +469,13 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
         #     param.data = replicated_tensor.data
         # return None
 
-        partition_size = sum([param.data.numel() for param in param_list])
+        #partition_size = sum([param.data.numel() for param in param_list])
+        partition_size = sum([param.ds_tensor.numel() for param in param_list])
+        
         tensor_size = partition_size * self.world_size
         flat_tensor = torch.empty(tensor_size,
                                   dtype=param_list[0].dtype,
-                                  device=param_list[0].device)
+                                  device=self.local_device)
         partitions = []
         for i in range(self.world_size):
             start = partition_size * i
@@ -459,8 +485,12 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
             if i == self.rank:
                 offset = 0
                 for param in param_list:
-                    param_numel = param.data.numel()
-                    partitions[i].narrow(0, offset, param_numel).copy_(param.data)
+                    #param_numel = param.data.numel()
+                    param_numel = param.ds_tensor.numel()
+                    
+                    #partitions[i].narrow(0, offset, param_numel).copy_(param.data)
+                    partitions[i].narrow(0, offset, param_numel).copy_(param.ds_tensor)
+                    
                     offset += param_numel
 
         torch.distributed.all_gather(partitions,
@@ -472,12 +502,13 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
 
         for param in param_list:
 
-            param_partition_size = param.data.numel()
+            #param_partition_size = param.data.numel()
+            param_partition_size = param.ds_tensor.numel()
 
             param_size = param.ds_numel
             replicated_tensor = torch.empty(param.ds_shape,
                                             dtype=param.dtype,
-                                            device=param.device)
+                                            device=self.local_device)
 
             for i in range(self.world_size):
 
@@ -493,7 +524,9 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                     replicated_tensor.view(-1).narrow(0,
                                                       param_start,
                                                       numel_to_copy).copy_(part_to_copy)
-            param_offset += param.data.numel()
+            #param_offset += param.data.numel()
+            param_offset += param.ds_tensor.numel()
+            
             param.data = replicated_tensor.data
 
         return None
@@ -589,7 +622,7 @@ class ScatteredParameters(InsertPostInitMethodToModuleSubClasses):
                                            dtype=param.dtype,
                                            device=param.device)
         else:
-            assert partition_buffer.numel() >= partition_size, "The partition buffer size should match the size of param.ds_tensor"
+            assert partition_buffer.numel() >= partition_size, f"The partition buffer size {partition_buffer.numel()} should match the size of param.ds_tensor {partition_size}"
 
         rank = torch.distributed.get_rank(group=self.ds_process_group)
         start = partition_size * rank

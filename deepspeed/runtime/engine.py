@@ -13,6 +13,7 @@ from torch.nn.modules import Module
 from torch.distributed.distributed_c10d import _get_global_rank
 from tensorboardX import SummaryWriter
 
+from deepspeed.runtime.utils import see_memory_usage
 from deepspeed.runtime.zero.stage2 import FP16_DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
 from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
@@ -108,8 +109,10 @@ class DeepSpeedEngine(Module):
                  mpu=None,
                  dist_init_required=None,
                  collate_fn=None,
-                 config_params=None):
+                 config_params=None,
+                 dont_change_device=True):
         super(DeepSpeedEngine, self).__init__()
+        self.dont_change_device=dont_change_device
         self.client_optimizer = optimizer
         self.client_model_parameters = model_parameters
         self.client_lr_scheduler = lr_scheduler
@@ -145,6 +148,7 @@ class DeepSpeedEngine(Module):
                     "Was given dist_init_required=True but detected that torch"
                     "distributed was already initialized, cannot initialize twice.")
 
+        see_memory_usage(f"DeepSpeed Engine: Before args sanity test")
         self._do_args_sanity_check(args)
         self._configure_with_arguments(args, mpu)
         self._do_sanity_check()
@@ -154,9 +158,13 @@ class DeepSpeedEngine(Module):
         if self.tensorboard_enabled() and self.global_rank == 0:
             self.summary_writer = self.get_summary_writer()
 
+        see_memory_usage(f"DeepSpeed Engine: Before configure distributed model")
+        
         # Configure distributed model
         self._configure_distributed_model(model)
 
+        see_memory_usage(f"DeepSpeed Engine: After configure distributed model")
+        
         # Configure wall clock timer
         self.timers = SynchronizedWallClockTimer()
 
@@ -511,7 +519,9 @@ class DeepSpeedEngine(Module):
         self.module = model
         if self.fp16_enabled():
             self.module.half()
-        self.module.to(self.device)
+        
+        if not self.dont_change_device:
+            self.module.to(self.device)
 
         if self.mpu is None:
             self.data_parallel_group = _initialize_parameter_parallel_groups()
@@ -694,7 +704,7 @@ class DeepSpeedEngine(Module):
                 reduce_scatter=self.zero_reduce_scatter(),
                 overlap_comm=self.zero_overlap_comm(),
                 cpu_offload_optimizer_state=self.zero_cpu_offload(),
-                cpu_offload_params=False,
+                cpu_offload_params=self.zero_cpu_offload(),
                 mpu=self.mpu,
                 postscale_gradients=self.postscale_gradients(),
                 gradient_predivide_factor=self.gradient_predivide_factor(),
