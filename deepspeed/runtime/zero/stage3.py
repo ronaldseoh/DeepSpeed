@@ -1869,6 +1869,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
 
         self.stop_timers([OPTIMIZER_FP32_GRADIENT])
 
+        print(f"Norm groups: {norm_groups}")
+
         self.unscale_and_clip_grads(single_partition_grad_groups, norm_groups)
 
         if self.optimizer_swap_tensors:
@@ -1899,6 +1901,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             fp16_partitions.data.copy_(fp32_partition.data)
         self.stop_timers([OPTIMIZER_FP16_UPDATE])
 
+        print(f"fp16 groups norm : {[group_flat.norm() for group_flat in self.fp16_partitioned_groups_flat]}")
         if self.cpu_offload:
             self.reset_cpu_buffers()
 
