@@ -653,6 +653,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage3(object):
             #These are the list of the partitoned parameters
             self.fp16_partitioned_groups.append([param.ds_tensor for param in self.fp16_groups[i]])
 
+            print(f"fp16 group {i} partitioned_param norms : {[param.ds_tensor.norm().item() for param in self.fp16_groups[i]]}")
+            exit(0)
+            
             # Record padding required to align group to world size (only applies to last rank)
             if partition_id == dist.get_world_size(group=self.dp_process_group) - 1:
                 padding = [p.padding_size() for p in self.fp16_groups[i]]
